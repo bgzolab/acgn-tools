@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{GameWithEntry, ImportRun, MediaKind, Source, Status};
+use crate::model::{Game, GameWithEntry, ImportRun, LibraryEntry, MediaKind, Source, Status};
 
 /// 数据源产出的统一条目。
 ///
@@ -119,6 +119,29 @@ impl Default for ImportOptions {
             include_dlc: true,
             include_non_games: false,
             dry_run: false,
+        }
+    }
+}
+
+/// 备份还原用的条目：即 `GET /api/export/json` 里 `items` 的元素格式
+///（`{"game": {…}, "entry": {…}}`）。
+///
+/// 与面向「接入新数据源」的扁平 [`SourceItem`] 不同，它描述的是一条**完整记录** ——
+/// 元数据加个人状态 —— 用于把导出文件原样灌回来。两者走不同的存储入口：
+/// `SourceItem` 走合并导入，`RestoreItem` 走还原（文件优先，不参与来源合并）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RestoreItem {
+    pub game: Game,
+    /// 缺失时按「愿望单、无个人状态」处理
+    #[serde(default)]
+    pub entry: Option<LibraryEntry>,
+}
+
+impl From<GameWithEntry> for RestoreItem {
+    fn from(value: GameWithEntry) -> Self {
+        Self {
+            game: value.game,
+            entry: Some(value.entry),
         }
     }
 }

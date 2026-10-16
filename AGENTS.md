@@ -88,6 +88,10 @@ node scripts/gen-steam-fixture.mjs
 Any change to this table requires updating `crates/acgn-store/tests/import_flow.rs` **and** the
 "Sync semantics" section of `README.md`. Those tests are the specification.
 
+Backups are a **separate write path** (`POST /api/imports/restore` → `Db::restore_items`): the
+file is authoritative for metadata *and* personal state. Never route a restore through the merge
+in §4.1, or restored ratings/notes/favorites will be silently dropped (see `docs/design.md` §4.3).
+
 ### 4.2 `MetadataLevel` (list vs full)
 
 `SourceItem.metadata_level` is `List` (wishlist-level: generic cover URL, English release string)

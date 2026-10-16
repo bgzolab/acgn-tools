@@ -117,7 +117,15 @@ SQLite keeps microseconds, sources may hand out nanoseconds. Instants are always
 microsecond precision (`timestamp_micros`), otherwise every sync sees a "change" that is really
 just precision loss.
 
-### 4.3 What never happens
+### 4.3 Two write paths: sync vs restore
+
+`import_items` (the merge used by every source adapter) follows §4.1. **Restoring a backup is a
+different operation with different rules**: `Db::restore_items` / `POST /api/imports/restore`
+treat the file as authoritative — metadata *and* personal state come from it, and nothing is
+deleted. Bookkeeping timestamps are refreshed. Keep them separate; do not route a restore through
+the merge, or restored ratings/notes will be silently dropped.
+
+### 4.4 What never happens
 
 - Deleting rows because a source stopped returning them.
 - Overwriting user state (status / rating / note / progress / playtime / favorite).

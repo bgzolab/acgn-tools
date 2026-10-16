@@ -47,7 +47,8 @@ Metadata follows the source; personal state follows the local database — see
 | PATCH | `/api/games/{id}` | Update personal state (status, rating, progress, playtime, note, favorite, priority) |
 | POST | `/api/games/{id}/refresh-metadata` | Re-fetch store details for a single entry |
 | POST | `/api/imports/steam/wishlist` | Import a Steam wishlist |
-| POST | `/api/imports` | Generic JSON import (offline / restore) |
+| POST | `/api/imports` | Generic JSON import (flat `SourceItem`s, merge semantics) |
+| POST | `/api/imports/restore` | Restore a backup (the export document verbatim, file wins) |
 | GET | `/api/imports` | Run history (`?limit=`) |
 | GET | `/api/imports/{id}` | One run, with its warnings |
 | POST | `/api/enrich` | Enrich pending entries with store details |
@@ -84,6 +85,51 @@ The response is a page object: `{ items, total, page, per_page, total_pages }`.
   fallbacks (for example "fell back to the official API") and `summary.missing` counts entries
   that are no longer in the wishlist — they are never deleted locally.
 
+### POST /api/imports
+
+Accepts flat `SourceItem`s — the shape a new source adapter produces:
+
+```json
+{
+  "source": "steam",
+  "preview": true,
+  "options": { "dry_run": false },
+  "items": [ { "external_id": "1245620", "title": "ELDEN RING", "status": "wishlist" } ]
+}
+```
+
+Two similarly named switches, **not** the same thing:
+
+| Field | Meaning |
+|---|---|
+| `preview` | return the affected entries in the response `preview` array (default `true`) |
+| `options.dry_run` | **do not write anything**: no rows, no run record, `run: null` |
+
+A request-level `source` overrides each item's own `source`; mixing several sources without it is
+rejected with 400.
+
+### POST /api/imports/restore
+
+Restores a backup produced by `GET /api/export/json`. The **whole export document can be posted
+verbatim** (extra fields such as `exported_at` or `count` are ignored); a bare array of
+`{ "game": …, "entry": … }` items is accepted too.
+
+```json
+{ "items": [ { "game": { "source": "steam", "external_id": "1245620", … }, "entry": { "status": "playing", "rating": 9, … } } ], "dry_run": false }
+```
+
+Restore semantics differ from a sync on purpose (**file wins**):
+
+- metadata *and* personal state (status, rating, note, progress, playtime, favorite, priority)
+  come from the file — this is a restore, not a merge;
+- entries missing from the file are left untouched (nothing is deleted);
+- `created_at` / `updated_at` / `last_synced_at` are bookkeeping and are refreshed to "now", so a
+  restore is reversible at the level of "metadata + personal state", not byte-for-byte;
+- `metadata_json` (the cached raw upstream payload) is not part of the export and keeps its value;
+- `dry_run: true` reports the same added / updated / unchanged counts without writing anything.
+
+Re-running the same file is idempotent: the second run reports `unchanged` for every entry.
+
 ### POST /api/enrich
 
 ```json
@@ -107,7 +153,7 @@ page as 502.
 { "exported_at": "…", "app": "acgn-tools", "schema_revision": 1, "count": 27, "items": [ … ] }
 ```
 
-The `items` array is accepted verbatim by `POST /api/imports` (`{ "items": [...] }`), which
-makes export → import a lossless backup round-trip. A JSON import may set a request-level
-`source` (it then overrides every item); mixing several sources in one request without it is
-rejected with 400.
+Each element is `{ "game": …, "entry": … }`: full metadata plus personal state. The document is
+meant to be posted back verbatim to [`POST /api/imports/restore`](#post-apiimportsrestore) for a
+backup round-trip (metadata + personal state; bookkeeping timestamps are refreshed). Flat
+`SourceItem` payloads for the merge import go to `POST /api/imports` instead.

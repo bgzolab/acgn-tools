@@ -4,7 +4,8 @@
 //! 元数据以来源为准、个人状态以本地为准、消失的条目不删除、重复导入幂等。
 
 use acgn_core::{
-    EntryPatch, GameListQuery, ImportOptions, MediaKind, MetadataLevel, Source, SourceItem, Status,
+    EntryPatch, GameListQuery, ImportOptions, MediaKind, MetadataLevel, RestoreItem, Source,
+    SourceItem, Status,
 };
 use acgn_store::{Db, GameFilters, ImportRequest, MetadataOutcome};
 use chrono::Utc;
@@ -297,6 +298,84 @@ async fn dry_run_reports_without_writing() {
         .await
         .unwrap();
     assert_eq!(page.total, 0, "预览不应写入任何数据");
+}
+
+/// P1 回归：导出 → 还原必须能把「元数据 + 个人状态」原样带回来，且可重复执行。
+#[tokio::test]
+async fn restore_round_trip_preserves_state_and_is_idempotent() {
+    let source_db = setup().await;
+    import(&source_db, &[item("900", "Omicron"), item("901", "Pi")]).await;
+
+    let game = source_db
+        .get_game_by_external(Source::Steam, "900")
+        .await
+        .unwrap()
+        .unwrap();
+    source_db
+        .update_entry(
+            game.game.id,
+            &EntryPatch {
+                status: Some(Status::Playing),
+                rating: Some(9),
+                progress_percent: Some(45),
+                playtime_minutes: Some(123),
+                note: Some("还原要保留这些".to_string()),
+                favorite: Some(true),
+                priority: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut detailed = item("900", "Omicron");
+    detailed.metadata_level = MetadataLevel::Full;
+    detailed.metadata = Some(serde_json::json!({ "kind": "appdetails" }));
+    detailed.short_description = Some("一段简介".to_string());
+    detailed.price_final = Some(1999);
+    source_db.update_metadata(&detailed).await.unwrap();
+
+    // 导出（就是 GET /api/export/json 的内容）
+    let exported = source_db.export_all().await.unwrap();
+    assert_eq!(exported.len(), 2);
+
+    // 还原到一个空库
+    let target = setup().await;
+    let items: Vec<RestoreItem> = exported
+        .clone()
+        .into_iter()
+        .map(RestoreItem::from)
+        .collect();
+    let summary = target.restore_items(&items, false).await.unwrap();
+    assert_eq!(
+        (summary.added, summary.updated, summary.unchanged),
+        (2, 0, 0)
+    );
+    assert_eq!(summary.mode, "restore");
+
+    let restored = target
+        .get_game_by_external(Source::Steam, "900")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.entry.status, Status::Playing);
+    assert_eq!(restored.entry.rating, Some(9));
+    assert_eq!(restored.entry.progress_percent, Some(45));
+    assert_eq!(restored.entry.playtime_minutes, Some(123));
+    assert_eq!(restored.entry.note.as_deref(), Some("还原要保留这些"));
+    assert!(restored.entry.favorite);
+    assert_eq!(restored.entry.priority, Some(2));
+    assert_eq!(restored.game.price_final, Some(1999));
+    assert_eq!(restored.game.short_description.as_deref(), Some("一段简介"));
+    assert!(restored.game.metadata_updated_at.is_some());
+
+    // 再还原一次：幂等（文件内容没变 → unchanged）
+    let again = target.restore_items(&items, false).await.unwrap();
+    assert_eq!((again.added, again.updated, again.unchanged), (0, 0, 2));
+
+    // 预览不落库、不写运行记录
+    let preview = target.restore_items(&items, true).await.unwrap();
+    assert_eq!(preview.unchanged, 2);
+    assert_eq!(preview.run_id, 0);
 }
 
 #[tokio::test]

@@ -67,13 +67,15 @@ Content-Type: application/json
   }
 }
 
-### 离线 JSON 导入
+### 离线 JSON 导入（扁平条目，合并语义）
+### preview 与 dry_run 是两件事：preview = 返回预览条目；options.dry_run = 不落库
 POST {{host}}/api/imports
 Content-Type: application/json
 
 {
   "source": "manual",
   "preview": true,
+  "options": { "dry_run": false },
   "items": [
     {
       "external_id": "note-001",
@@ -82,6 +84,28 @@ Content-Type: application/json
       "tags": ["独立", "解谜"]
     }
   ]
+}
+
+### 备份还原：把 GET /api/export/json 的产物原样灌回来（文件优先）
+POST {{host}}/api/imports/restore
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "game": { "source": "steam", "external_id": "1245620", "title": "ELDEN RING" },
+      "entry": { "status": "playing", "rating": 9, "note": "备份还原会保留这些" }
+    }
+  ]
+}
+
+### 还原预览（不落库、不写运行记录）
+POST {{host}}/api/imports/restore
+Content-Type: application/json
+
+{
+  "items": [],
+  "dry_run": true
 }
 
 ### 批量补全元数据（Steam appdetails，有限流）

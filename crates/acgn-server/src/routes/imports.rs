@@ -1,7 +1,7 @@
 //! 导入 / 同步接口。
 
 use acgn_core::{
-    Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary, Source, SourceItem,
+    Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary, RestoreItem, Source, SourceItem,
 };
 use acgn_store::ImportRequest;
 use axum::Json;
@@ -155,6 +155,59 @@ pub async fn import_json(
         summary,
         run,
         preview,
+    }))
+}
+
+/// POST /api/imports/restore —— 备份还原（文件优先，不走来源合并）
+///
+/// 接受 `GET /api/export/json` 的整份导出文档（多余字段忽略）或裸数组 `[{game, entry}, …]`。
+#[derive(Debug, Deserialize)]
+pub struct RestoreRequest {
+    pub items: Vec<RestoreItem>,
+    /// 只统计不落库（与 Steam 导入的 `options.dry_run` 同义）
+    #[serde(default)]
+    pub dry_run: bool,
+    /// 是否返回受影响的条目（默认 true）
+    #[serde(default = "default_true")]
+    pub preview: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum RestoreBody {
+    /// 导出文档，或手写的 `{ "items": [...] }`
+    Document(RestoreRequest),
+    /// 裸数组
+    Items(Vec<RestoreItem>),
+}
+
+impl RestoreBody {
+    fn into_parts(self) -> (Vec<RestoreItem>, bool, bool) {
+        match self {
+            RestoreBody::Document(request) => (request.items, request.dry_run, request.preview),
+            RestoreBody::Items(items) => (items, false, true),
+        }
+    }
+}
+
+pub async fn restore_json(
+    State(state): State<AppState>,
+    ValidJson(body): ValidJson<RestoreBody>,
+) -> ApiResult<Json<ImportResponse>> {
+    let (items, dry_run, preview) = body.into_parts();
+
+    let summary = state.db.restore_items(&items, dry_run).await?;
+    let run = state.db.get_import_run(summary.run_id).await?;
+    let preview_items = if preview && !dry_run {
+        state.db.load_many(&summary.sample_ids).await?
+    } else {
+        Vec::new()
+    };
+
+    Ok(Json(ImportResponse {
+        summary,
+        run,
+        preview: preview_items,
     }))
 }
 

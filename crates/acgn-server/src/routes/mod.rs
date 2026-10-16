@@ -46,6 +46,7 @@ pub fn api_router(state: AppState) -> Router<AppState> {
             "/imports/steam/wishlist",
             post(imports::import_steam_wishlist),
         )
+        .route("/imports/restore", post(imports::restore_json))
         .route("/enrich", post(enrich::enrich))
         // 兜底：未知的 /api 路径返回 JSON，而不是前端的 index.html
         .route("/{*rest}", any(api_not_found))
@@ -65,7 +66,8 @@ async fn api_index() -> Json<serde_json::Value> {
             { "method": "PATCH", "path": "/api/games/{id}",                "desc": "改状态/评分/进度/备注/收藏" },
             { "method": "POST",  "path": "/api/games/{id}/refresh-metadata", "desc": "抓取该条目的商店详情" },
             { "method": "POST",  "path": "/api/imports/steam/wishlist",    "desc": "导入 Steam 愿望单" },
-            { "method": "POST",  "path": "/api/imports",                   "desc": "通用 JSON 导入（离线 / 备份恢复）" },
+            { "method": "POST",  "path": "/api/imports",                   "desc": "通用 JSON 导入（扁平 SourceItem，合并语义）" },
+            { "method": "POST",  "path": "/api/imports/restore",           "desc": "备份还原（导出文件原样回灌，文件优先）" },
             { "method": "GET",   "path": "/api/imports",                   "desc": "导入历史" },
             { "method": "POST",  "path": "/api/enrich",                    "desc": "批量补全缺失的元数据" },
             { "method": "GET",   "path": "/api/export/json",               "desc": "全量导出（备份 / 未来同步）" }

@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use acgn_core::{
     Error, Game, GameWithEntry, ImportOptions, ImportRun, ImportSummary, LibraryEntry, MediaKind,
-    Result, Source, SourceItem, Status,
+    RestoreItem, Result, Source, SourceItem, Status,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{QueryBuilder, Sqlite, SqliteConnection, Transaction};
@@ -339,6 +339,198 @@ impl Db {
         Ok(summary)
     }
 
+    // ---------------------------------------------------------------- 备份还原
+
+    /// 备份还原：把导出文件里的条目写回（**文件优先**，刻意不走合并语义）。
+    ///
+    /// 与 [`Db::import_items`] 的区别：
+    ///
+    /// - 元数据与个人状态（状态 / 评分 / 备注 / 进度 / 时长 / 收藏 / 优先级）都以文件为准；
+    /// - `entry` 缺失时按「愿望单、无个人状态」创建；
+    /// - 文件里没有的条目不会被删除；
+    /// - `metadata_json`（原始载荷缓存）不在导出范围内，保持原值；
+    /// - `created_at` / `updated_at` / `last_synced_at` 属于记账字段，会刷新为当前时间
+    ///   （因此还原不是逐字节相等，但「元数据 + 个人状态」是可逆的）。
+    ///
+    /// `dry_run` 只统计不落库（`run_id == 0`，也不写运行记录）。
+    pub async fn restore_items(
+        &self,
+        items: &[RestoreItem],
+        dry_run: bool,
+    ) -> Result<ImportSummary> {
+        let started = Instant::now();
+        let now = Utc::now();
+
+        let mut sources: HashMap<String, i64> = HashMap::new();
+        for item in items {
+            *sources
+                .entry(item.game.source.as_str().to_string())
+                .or_default() += 1;
+        }
+
+        let mut summary = ImportSummary {
+            run_id: 0,
+            source: Source::Manual,
+            mode: "restore".to_string(),
+            seen: items.len() as i64,
+            added: 0,
+            updated: 0,
+            unchanged: 0,
+            skipped: 0,
+            missing: 0,
+            warnings: Vec::new(),
+            duration_ms: 0,
+            sample_ids: Vec::new(),
+            source_mode: "json".to_string(),
+        };
+
+        if items.is_empty() {
+            summary
+                .warnings
+                .push("items 为空：导出文件里没有可还原的条目".to_string());
+            summary.duration_ms = started.elapsed().as_millis() as i64;
+            return Ok(summary);
+        }
+
+        let run_id = if dry_run {
+            0
+        } else {
+            self.begin_run(
+                Source::Manual,
+                "restore",
+                Some(serde_json::json!({ "items": items.len(), "sources": sources })),
+            )
+            .await?
+        };
+
+        match self
+            .restore_items_inner(items, dry_run, &mut summary, now)
+            .await
+        {
+            Ok(()) => {
+                summary.duration_ms = started.elapsed().as_millis() as i64;
+                if !dry_run {
+                    self.finish_run_ok(
+                        run_id,
+                        RunCounts {
+                            seen: summary.seen,
+                            added: summary.added,
+                            updated: summary.updated,
+                            unchanged: summary.unchanged,
+                            skipped: summary.skipped,
+                            missing: 0,
+                        },
+                        &summary.warnings,
+                        summary.duration_ms,
+                    )
+                    .await?;
+                    summary.run_id = run_id;
+                }
+                info!(
+                    run_id,
+                    dry_run,
+                    added = summary.added,
+                    updated = summary.updated,
+                    unchanged = summary.unchanged,
+                    "备份还原完成"
+                );
+                Ok(summary)
+            }
+            Err(err) => {
+                if !dry_run {
+                    let duration = started.elapsed().as_millis() as i64;
+                    if let Err(record_err) = self
+                        .finish_run_err(run_id, &err.to_string(), duration)
+                        .await
+                    {
+                        warn!(run_id, error = %record_err, "写入失败记录时又出错了");
+                    }
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn restore_items_inner(
+        &self,
+        items: &[RestoreItem],
+        dry_run: bool,
+        summary: &mut ImportSummary,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        // 预览不落库，也不开事务（内存库只有一条连接，事务会占住它）
+        if dry_run {
+            for item in items {
+                let Some(external_id) = valid_external_id(item) else {
+                    summary.skipped += 1;
+                    continue;
+                };
+                let previous = load_row(&self.pool, item.game.source, external_id)
+                    .await?
+                    .map(GameEntryRow::into_domain)
+                    .transpose()?;
+                match plan_restore(previous, item, now)?.2 {
+                    RestoreAction::Added => summary.added += 1,
+                    RestoreAction::Updated => summary.updated += 1,
+                    RestoreAction::Unchanged => summary.unchanged += 1,
+                }
+            }
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await.db()?;
+        for item in items {
+            let Some(external_id) = valid_external_id(item) else {
+                summary.skipped += 1;
+                summary
+                    .warnings
+                    .push("有 1 条缺少 external_id，已跳过".to_string());
+                continue;
+            };
+
+            let previous = load_in_tx(&mut tx, item.game.source, external_id)
+                .await?
+                .map(GameEntryRow::into_domain)
+                .transpose()?;
+            let (game, entry, action) = plan_restore(previous, item, now)?;
+
+            match action {
+                RestoreAction::Added => {
+                    let game_id = insert_game_in_tx(&mut tx, &game, None, now).await?;
+                    let mut entry = entry;
+                    entry.game_id = game_id;
+                    entry.created_at = now;
+                    entry.updated_at = now;
+                    entry.last_synced_at = Some(now);
+                    insert_entry_in_tx(&mut tx, &entry).await?;
+                    summary.added += 1;
+                    push_sample(&mut summary.sample_ids, game_id);
+                }
+                RestoreAction::Updated => {
+                    update_game_in_tx(&mut tx, &game, now).await?;
+                    update_entry_in_tx(&mut tx, &entry).await?;
+                    summary.updated += 1;
+                    push_sample(&mut summary.sample_ids, game.id);
+                }
+                RestoreAction::Unchanged => {
+                    summary.unchanged += 1;
+                    sqlx::query("UPDATE library_entries SET last_synced_at = ? WHERE game_id = ?")
+                        .bind(now)
+                        .bind(game.id)
+                        .execute(&mut *tx)
+                        .await
+                        .db()?;
+                }
+            }
+        }
+        tx.commit().await.db()?;
+
+        summary.sample_ids.truncate(24);
+        summary.sample_ids.sort_unstable();
+        summary.sample_ids.dedup();
+        Ok(())
+    }
+
     // ---------------------------------------------------------------- 元数据补全
 
     /// 用完整元数据（Steam appdetails 等）更新单条；不存在则新建。
@@ -464,6 +656,96 @@ impl Db {
 }
 
 // -------------------------------------------------------------------- 内部实现
+
+/// 还原单条的结果归类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestoreAction {
+    Added,
+    Updated,
+    Unchanged,
+}
+
+/// 合法的 `external_id`：空串或纯空白直接跳过。
+fn valid_external_id(item: &RestoreItem) -> Option<&str> {
+    let external_id = item.game.external_id.trim();
+    (!external_id.is_empty()).then_some(external_id)
+}
+
+/// 规划单条还原：算出要写入的 `(game, entry)` 以及「相对本地有没有变化」。
+fn plan_restore(
+    previous: Option<GameWithEntry>,
+    item: &RestoreItem,
+    now: DateTime<Utc>,
+) -> Result<(Game, LibraryEntry, RestoreAction)> {
+    let mut game = item.game.clone();
+    let mut entry = item.entry.clone().unwrap_or(LibraryEntry {
+        game_id: 0,
+        status: Status::Wishlist,
+        priority: None,
+        favorite: false,
+        rating: None,
+        progress_percent: None,
+        playtime_minutes: None,
+        note: None,
+        source_added_at: None,
+        started_at: None,
+        finished_at: None,
+        last_synced_at: None,
+        created_at: now,
+        updated_at: now,
+    });
+
+    match previous {
+        None => {
+            game.id = 0;
+            game.created_at = now;
+            game.updated_at = now;
+            entry.game_id = 0;
+            entry.created_at = now;
+            entry.updated_at = now;
+            entry.last_synced_at = Some(now);
+            Ok((game, entry, RestoreAction::Added))
+        }
+        Some(previous) => {
+            let game_id = previous.game.id;
+            game.id = game_id;
+            // created_at / updated_at 是记账字段：保留本地值、不参与「有没有变化」比较
+            game.created_at = previous.game.created_at;
+            game.updated_at = now;
+            entry.game_id = game_id;
+            entry.created_at = previous.entry.created_at;
+            entry.updated_at = now;
+            entry.last_synced_at = Some(now);
+
+            let changed = restore_changed(&previous, &game, &entry);
+            Ok((
+                game,
+                entry,
+                if changed {
+                    RestoreAction::Updated
+                } else {
+                    RestoreAction::Unchanged
+                },
+            ))
+        }
+    }
+}
+
+/// 还原时的「有没有变化」判定：忽略 id 与纯记账时间戳。
+fn restore_changed(previous: &GameWithEntry, game: &Game, entry: &LibraryEntry) -> bool {
+    let mut local_game = previous.game.clone();
+    local_game.id = game.id;
+    local_game.created_at = game.created_at;
+    local_game.updated_at = game.updated_at;
+
+    let mut local_entry = previous.entry.clone();
+    local_entry.game_id = entry.game_id;
+    local_entry.created_at = entry.created_at;
+    local_entry.updated_at = entry.updated_at;
+    local_entry.last_synced_at = entry.last_synced_at;
+
+    local_game != *game || local_entry != *entry
+}
 
 /// 「来源里消失了」的告警：预览与真实导入共用同一段文案，避免两边说法不一致。
 fn push_missing_warning(summary: &mut ImportSummary, previous: &HashMap<String, i64>) {
