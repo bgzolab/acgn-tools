@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 
-import { displayTitle, reviewColor, reviewLabelZh, secondaryTitle } from "../composables/format";
+import { displayTitle, formatPrice, reviewColor, reviewLabelZh, secondaryTitle } from "../composables/format";
 import type { GameWithEntry } from "../api/types";
 import PosterImage from "./PosterImage.vue";
 import StatusBadge from "./StatusBadge.vue";
@@ -14,13 +14,11 @@ const entry = computed(() => props.item.entry);
 const title = computed(() => displayTitle(game.value));
 const subtitle = computed(() => secondaryTitle(game.value));
 const discount = computed(() => game.value.discount_percent ?? 0);
+// 统一走 formatPrice：自带币种符号、保留两位小数，避免自己实现一份
+// （$0.49 曾经被截成 $0）
 const priceText = computed(() => {
   if (game.value.is_free) return "免费";
-  const cents = game.value.price_final ?? game.value.price_initial;
-  if (cents === null || cents === undefined) return "—";
-  if (cents === 0) return "免费";
-  const symbol = game.value.price_currency === "USD" ? "$" : game.value.price_currency === "CNY" ? "¥" : `${game.value.price_currency ?? ""} `;
-  return `${symbol}${(cents / 100).toFixed(0)}`;
+  return formatPrice(game.value.price_final ?? game.value.price_initial, game.value.price_currency);
 });
 </script>
 

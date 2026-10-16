@@ -287,8 +287,13 @@ impl SteamClient {
                     "Steam 拒绝了愿望单请求：请把「个人资料」「游戏详情」「愿望单」都设为公开",
                 ));
             }
-            if status.as_u16() == 404 && page > 0 {
-                break;
+            if status.as_u16() == 404 {
+                if page > 0 {
+                    break;
+                }
+                return Err(Error::rejected(
+                    "Steam 返回 404：请确认 SteamID 是否正确，以及个人资料 / 愿望单是否公开",
+                ));
             }
             if !status.is_success() {
                 return Err(Error::rejected(format!("愿望单接口返回 HTTP {status}")));

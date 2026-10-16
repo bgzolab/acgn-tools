@@ -62,19 +62,38 @@ fn try_ymd(value: &str) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32)
 }
 
-/// 把 "1,234" / "12.3万" 这类计数解析成整数。
+/// 把 "1,234" / "12.3万" / "1.2亿" 这类计数解析成整数。
+///
+/// 中文社区（Bangumi / 小黑盒这类文本）常用「万 / 亿」量级后缀，必须按乘数换算，
+/// 否则 12.3 万会被解析成 12（差 4 个数量级）并原样落库展示。
 pub fn parse_count(raw: &str) -> Option<i64> {
-    let digits: String = raw
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let (numeric_part, multiplier) = if let Some(rest) = trimmed.strip_suffix('万') {
+        (rest, 10_000_f64)
+    } else if let Some(rest) = trimmed.strip_suffix('亿') {
+        (rest, 100_000_000_f64)
+    } else {
+        (trimmed, 1_f64)
+    };
+
+    let digits: String = numeric_part
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '.')
         .collect();
     if digits.is_empty() {
         return None;
     }
-    if let Ok(value) = digits.parse::<i64>() {
-        return Some(value);
-    }
-    digits.parse::<f64>().ok().map(|value| value.round() as i64)
+
+    let value = match digits.parse::<i64>() {
+        Ok(value) => value as f64,
+        Err(_) => digits.parse::<f64>().ok()?,
+    };
+
+    Some((value * multiplier).round() as i64)
 }
 
 /// Unix 秒 → `DateTime<Utc>`。
@@ -145,6 +164,10 @@ mod tests {
         assert_eq!(parse_count("1,234"), Some(1234));
         assert_eq!(parse_count("98,765"), Some(98765));
         assert_eq!(parse_count("暂无"), None);
+        // 中文量级后缀必须换算，否则差 4 个数量级
+        assert_eq!(parse_count("12.3万"), Some(123_000));
+        assert_eq!(parse_count("1.2亿"), Some(120_000_000));
+        assert_eq!(parse_count("3万"), Some(30_000));
     }
 
     #[test]
