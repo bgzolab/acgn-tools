@@ -18,7 +18,7 @@ pub mod util;
 pub mod wishlist;
 
 pub use appdetails::AppDetailsData;
-pub use client::{SteamClient, WishlistFetch};
+pub use client::{AppDetailsBatch, SteamClient, WishlistFetch};
 pub use config::SteamConfig;
 pub use fixture::FixtureData;
 pub use wishlist::{WishlistItem, WishlistPayload};
@@ -47,9 +47,16 @@ pub fn public_wishlist_url(steam_id: &str, page: u32) -> String {
     format!("{STORE_BASE}/wishlist/profiles/{steam_id}/wishlistdata/?p={page}")
 }
 
-/// 官方愿望单接口（需要 API Key）。
-pub fn official_wishlist_url(api_key: &str, steam_id: &str) -> String {
-    format!("{API_BASE}/IWishlistService/GetWishlist/v1/?key={api_key}&steamid={steam_id}")
+/// 官方愿望单接口（需要 API Key）；`cursor` 为空表示首页。
+pub fn official_wishlist_url(api_key: &str, steam_id: &str, cursor: Option<&str>) -> String {
+    match cursor {
+        Some(cursor) if !cursor.is_empty() => format!(
+            "{API_BASE}/IWishlistService/GetWishlist/v1/?key={api_key}&steamid={steam_id}&cursor={cursor}"
+        ),
+        _ => {
+            format!("{API_BASE}/IWishlistService/GetWishlist/v1/?key={api_key}&steamid={steam_id}")
+        }
+    }
 }
 
 /// 商店详情接口（无需 API Key，但有限流）。

@@ -3,12 +3,13 @@
 use std::time::Instant;
 
 use acgn_core::{EnrichSummary, Source};
+use acgn_steam::AppDetailsBatch;
 use acgn_store::{MetadataOutcome, RunCounts};
 use axum::Json;
 use axum::extract::State;
 use serde::Deserialize;
 
-use crate::error::ApiResult;
+use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 /// POST /api/enrich
@@ -48,7 +49,18 @@ pub async fn enrich(
         }));
     }
 
-    let (items, mut warnings) = state.steam.app_details_batch(&appids).await?;
+    let AppDetailsBatch {
+        items,
+        mut warnings,
+        last_error,
+    } = state.steam.app_details_batch(&appids).await?;
+
+    // 全都被限流/拒绝时直接返回 422：让用户看到「稍后重试」，而不是伪造一个 0 成功的 200
+    if items.is_empty()
+        && let Some(err) = last_error
+    {
+        return Err(ApiError(err));
+    }
 
     let mut succeeded = 0i64;
     let mut updated = 0i64;

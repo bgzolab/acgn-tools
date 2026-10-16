@@ -191,18 +191,18 @@ async fn seed(
             .collect();
         println!("→ 补全 {} 个条目的元数据…", appids.len());
 
-        let (items, warnings) = steam.app_details_batch(&appids).await?;
+        let batch = steam.app_details_batch(&appids).await?;
         let mut ok = 0;
-        for item in &items {
+        for item in &batch.items {
             db.update_metadata(item).await?;
             ok += 1;
         }
         println!(
             "  成功 {ok} / 失败 {} / 告警 {} 条",
             appids.len() as i64 - ok,
-            warnings.len()
+            batch.warnings.len()
         );
-        for warning in warnings.iter().take(8) {
+        for warning in batch.warnings.iter().take(8) {
             println!("  ⚠ {warning}");
         }
     }

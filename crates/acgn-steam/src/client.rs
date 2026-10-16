@@ -24,7 +24,15 @@ use crate::{app_details_url, official_wishlist_url, public_wishlist_url, vanity_
 /// 愿望单最多翻多少页（每页约 100 条，足够 6000 个愿望）。
 const MAX_WISHLIST_PAGES: u32 = 60;
 
+/// 官方接口最多翻多少页（分页语义若变化，靠告警暴露而不是静默截断）。
+const MAX_OFFICIAL_PAGES: u32 = 60;
+
 /// reqwest 错误 → 领域错误。
+///
+/// **必须脱敏**：reqwest 的 `Display` 会带上完整请求 URL（含 query），而官方愿望单接口的
+/// API Key 就在 query 里（`?key=...`）。一旦原样透传，密钥会经 warnings → `import_runs`、
+/// `ApiError` → HTTP 响应、tracing → 日志三处泄漏，且永久留在数据库的同步历史里。
+/// `without_url()` 只去掉 URL 字段，`is_timeout()` / `is_decode()` 等分类信息都保留。
 pub(crate) trait ReqwestExt<T> {
     fn net(self) -> Result<T>;
 }
@@ -32,6 +40,7 @@ pub(crate) trait ReqwestExt<T> {
 impl<T> ReqwestExt<T> for std::result::Result<T, reqwest::Error> {
     fn net(self) -> Result<T> {
         self.map_err(|err| {
+            let err = err.without_url();
             if err.is_timeout() {
                 Error::network(format!("请求超时: {err}"))
             } else if err.is_decode() {
@@ -92,6 +101,18 @@ pub fn parse_id_input(input: &str) -> Result<IdInput> {
     Err(Error::invalid(format!(
         "无法识别 SteamID：{trimmed}（支持 17 位 steamID64、个性域名或个人主页链接）"
     )))
+}
+
+/// 批量补全的结果。
+///
+/// 把「取不到的条目」和「为什么取不到」分开：
+/// `warnings` 给用户看，`last_error` 给调用方区分「已下架(成功但无数据)」和
+/// 「被限流/拒绝(应该提示稍后重试)」——否则 429 会被误报成「可能已下架」。
+#[derive(Debug)]
+pub struct AppDetailsBatch {
+    pub items: Vec<SourceItem>,
+    pub warnings: Vec<String>,
+    pub last_error: Option<Error>,
 }
 
 /// 一次愿望单抓取的结果。
@@ -222,7 +243,8 @@ impl SteamClient {
             }
             Err(err) if self.config.has_api_key() => {
                 warnings.push(format!("公开愿望单接口不可用（{err}），回退到官方 Web API"));
-                let items = self.fetch_official_wishlist(&steam_id).await?;
+                let (items, mut extra) = self.fetch_official_wishlist(&steam_id).await?;
+                warnings.append(&mut extra);
                 warnings.push(
                     "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取详情"
                         .to_string(),
@@ -319,38 +341,57 @@ impl SteamClient {
         Ok((items, warnings))
     }
 
-    /// 官方接口：只返回 appid / priority / date_added。
-    async fn fetch_official_wishlist(&self, steam_id: &str) -> Result<Vec<SourceItem>> {
+    /// 官方接口：只返回 appid / priority / date_added，带 `next_cursor` 分页。
+    ///
+    /// 返回 `(items, warnings)`：分页没取全时必须给用户一条告警，不能静默截断。
+    async fn fetch_official_wishlist(
+        &self,
+        steam_id: &str,
+    ) -> Result<(Vec<SourceItem>, Vec<String>)> {
         let key = self
             .config
             .api_key
             .as_ref()
             .ok_or_else(|| Error::invalid("缺少 STEAM_API_KEY"))?;
 
-        let url = official_wishlist_url(key, steam_id);
-        let value: serde_json::Value = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .net()?
-            .json()
-            .await
-            .net()?;
+        let mut warnings = Vec::new();
+        let mut items: Vec<SourceItem> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut cursor: Option<String> = None;
 
-        let entries = value
-            .get("response")
-            .and_then(|response| response.get("items"))
-            .and_then(|items| items.as_array())
-            .cloned()
-            .unwrap_or_default();
+        for page in 0..MAX_OFFICIAL_PAGES {
+            let url = official_wishlist_url(key, steam_id, cursor.as_deref());
+            let value: serde_json::Value = self
+                .http
+                .get(url)
+                .header(ACCEPT, "application/json")
+                .send()
+                .await
+                .net()?
+                .json()
+                .await
+                .net()?;
 
-        let items = entries
-            .iter()
-            .filter_map(|entry| {
-                let appid = entry.get("appid")?.as_i64()?.to_string();
-                let mut item = SourceItem {
+            let response = value.get("response");
+            let entries = response
+                .and_then(|response| response.get("items"))
+                .and_then(|items| items.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut fresh = 0usize;
+            for entry in &entries {
+                let Some(appid) = entry
+                    .get("appid")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                else {
+                    continue;
+                };
+                if !seen.insert(appid.clone()) {
+                    continue;
+                }
+                items.push(SourceItem {
                     source: acgn_core::Source::Steam,
                     external_id: appid.clone(),
                     title: format!("Steam App {appid}"),
@@ -363,13 +404,36 @@ impl SteamClient {
                         .and_then(|seconds| crate::util::from_unix(Some(seconds))),
                     metadata: Some(entry.clone()),
                     ..Default::default()
-                };
-                item.status = None;
-                Some(item)
-            })
-            .collect();
+                });
+                fresh += 1;
+            }
 
-        Ok(items)
+            let next = response
+                .and_then(|response| response.get("next_cursor"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            let Some(next) = next else { break };
+
+            if fresh == 0 {
+                // 有游标但没拿到新数据：接口语义可能变了，别再无限翻页
+                warnings.push(format!(
+                    "官方愿望单接口返回了 next_cursor 但没有新条目（cursor={next}）：分页语义可能已变化，本次导入可能不完整"
+                ));
+                break;
+            }
+            if page + 1 >= MAX_OFFICIAL_PAGES {
+                warnings.push(format!(
+                    "官方愿望单接口翻页超过 {MAX_OFFICIAL_PAGES} 页仍未结束，本次导入可能不完整"
+                ));
+                break;
+            }
+            cursor = Some(next);
+        }
+
+        Ok((items, warnings))
     }
 
     /// 单条 appdetails（限流安全：调用方控制节奏）。
@@ -400,10 +464,7 @@ impl SteamClient {
     }
 
     /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
-    pub async fn app_details_batch(
-        &self,
-        appids: &[String],
-    ) -> Result<(Vec<SourceItem>, Vec<String>)> {
+    pub async fn app_details_batch(&self, appids: &[String]) -> Result<AppDetailsBatch> {
         if let Some(fixture) = &self.fixture {
             let mut items = Vec::new();
             let mut warnings = Vec::new();
@@ -423,11 +484,16 @@ impl SteamClient {
                     )),
                 }
             }
-            return Ok((items, warnings));
+            return Ok(AppDetailsBatch {
+                items,
+                warnings,
+                last_error: None,
+            });
         }
 
         let mut items = Vec::new();
         let mut warnings = Vec::new();
+        let mut last_error: Option<Error> = None;
         let concurrency = self.config.enrich_concurrency.max(1);
 
         'outer: for chunk in appids.chunks(concurrency) {
@@ -446,12 +512,16 @@ impl SteamClient {
                     Ok(Some(item)) => items.push(item),
                     Ok(None) => warnings.push(format!("{appid}: Steam 未返回详情（可能已下架）")),
                     Err(err) => {
+                        let rejected = matches!(err, Error::SourceRejected(_));
                         warnings.push(format!("{appid}: {err}"));
-                        if matches!(err, Error::SourceRejected(_)) {
+                        if rejected {
                             warnings.push(
                                 "已触发 Steam 限流，剩余条目稍后重试即可（已完成的会保留）"
                                     .to_string(),
                             );
+                        }
+                        last_error = Some(err);
+                        if rejected {
                             break 'outer;
                         }
                     }
@@ -463,23 +533,60 @@ impl SteamClient {
             }
         }
 
-        Ok((items, warnings))
+        Ok(AppDetailsBatch {
+            items,
+            warnings,
+            last_error,
+        })
     }
 
     /// 抓一个 app 的详情（详情页「刷新元数据」用）。
+    ///
+    /// 语义区分：Steam 明确返回「没有这个 app」（已下架）→ `Ok(None)`；
+    /// 限流/拒绝 → `Err(SourceRejected)`，让上层返回 422「稍后重试」而不是「可能已下架」。
     pub async fn app_details_one(&self, appid: &str) -> Result<Option<SourceItem>> {
-        let (mut items, warnings) = self.app_details_batch(&[appid.to_string()]).await?;
-        if items.is_empty() {
-            warn!(appid, ?warnings, "未取到 appdetails");
+        let batch = self.app_details_batch(&[appid.to_string()]).await?;
+        if batch.items.is_empty() {
+            if let Some(err) = batch.last_error {
+                return Err(err);
+            }
+            warn!(appid, warnings = ?batch.warnings, "未取到 appdetails");
             return Ok(None);
         }
-        Ok(items.pop())
+        Ok(batch.items.into_iter().next())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P1 回归：reqwest 的错误 Display 带完整请求 URL（含 query），而官方接口的
+    /// API Key 就在 query 里——`net()` 必须脱敏，否则密钥会进日志/import_runs/API 响应。
+    #[tokio::test]
+    async fn net_redacts_url_and_query() {
+        let client = reqwest::Client::new();
+        let err = client
+            .get("http://127.0.0.1:1/IWishlistService/GetWishlist/v1/?key=SECRET_KEY_FOR_TEST&steamid=1")
+            .send()
+            .await
+            .net()
+            .expect_err("连接失败应当报错");
+
+        let text = err.to_string();
+        assert!(
+            !text.contains("SECRET_KEY_FOR_TEST"),
+            "错误信息里不能出现 API Key：{text}"
+        );
+        assert!(
+            !text.contains("IWishlistService"),
+            "错误信息里不应包含请求 URL：{text}"
+        );
+        assert!(
+            matches!(err, acgn_core::Error::Network(_)),
+            "应归类为网络错误，实际：{err:?}"
+        );
+    }
 
     #[test]
     fn parses_id_inputs() {
