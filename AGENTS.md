@@ -4,6 +4,18 @@ Working agreements for AI coding agents (opencode, Cursor, Copilot, …) in this
 Human-facing documentation lives in [`README.md`](README.md); this file is the machine-oriented
 summary of **how to change this codebase safely**.
 
+## Docs map
+
+| Document | Audience | Contents |
+|---|---|---|
+| [`README.md`](README.md) | users | what it is, quick start, configuration, roadmap |
+| [`docs/design.md`](docs/design.md) | maintainers & agents | architecture, data model, **synchronization rules (§4 — the spec the tests encode)** |
+| [`docs/api.md`](docs/api.md) | integrators | HTTP contract: error envelope, PATCH semantics, endpoint notes |
+| [`docs/api.http`](docs/api.http) | anyone | runnable request samples (VS Code REST Client) |
+
+Keep design rationale out of the README: user-facing instructions in `README.md`, design and
+trade-offs in `docs/design.md`, working agreements in this file.
+
 ---
 
 ## 1. What this project is
