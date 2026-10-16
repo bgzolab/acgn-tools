@@ -1,0 +1,513 @@
+{
+  "steam_id": "76561198000000000",
+  "fetched_at": "2026-10-16T03:23:58.393Z",
+  "note": "样例数据：由 scripts/gen-steam-fixture.mjs 从公开接口生成，用于离线演示",
+  "wishlist": {
+    "105600": {
+      "name": "Terraria",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "1,562,875",
+      "reviews_percent": 97,
+      "release_string": "16 May, 2011",
+      "type": "game",
+      "priority": 15,
+      "added": 1783826604,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "Indie",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/105600/"
+    },
+    "294100": {
+      "name": "RimWorld",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "248,157",
+      "reviews_percent": 98,
+      "release_string": "17 Oct, 2018",
+      "type": "game",
+      "priority": 13,
+      "added": 1784863404,
+      "is_free_game": false,
+      "tags": [
+        "Indie",
+        "Simulation",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/294100/"
+    },
+    "367520": {
+      "name": "Hollow Knight",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "565,303",
+      "reviews_percent": 97,
+      "release_string": "24 Feb, 2017",
+      "type": "game",
+      "priority": 6,
+      "added": 1788492204,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "Indie"
+      ],
+      "store_url": "https://store.steampowered.com/app/367520/"
+    },
+    "413150": {
+      "name": "Stardew Valley",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "1,045,180",
+      "reviews_percent": 98,
+      "release_string": "26 Feb, 2016",
+      "type": "game",
+      "priority": 4,
+      "added": 1789529004,
+      "is_free_game": false,
+      "tags": [
+        "Indie",
+        "RPG",
+        "Simulation"
+      ],
+      "store_url": "https://store.steampowered.com/app/413150/"
+    },
+    "427520": {
+      "name": "Factorio",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "235,863",
+      "reviews_percent": 98,
+      "release_string": "14 Aug, 2020",
+      "type": "game",
+      "priority": 8,
+      "added": 1787455404,
+      "is_free_game": false,
+      "tags": [
+        "Casual",
+        "Indie",
+        "Simulation",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/427520/"
+    },
+    "526870": {
+      "name": "Satisfactory",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "281,282",
+      "reviews_percent": 97,
+      "release_string": "10 Sep, 2024",
+      "type": "game",
+      "priority": 12,
+      "added": 1785381804,
+      "is_free_game": false,
+      "tags": [
+        "Adventure",
+        "Indie",
+        "Simulation",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/526870/"
+    },
+    "548430": {
+      "name": "Deep Rock Galactic",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "380,968",
+      "reviews_percent": 97,
+      "release_string": "13 May, 2020",
+      "type": "game",
+      "priority": 14,
+      "added": 1784345004,
+      "is_free_game": false,
+      "tags": [
+        "Action"
+      ],
+      "store_url": "https://store.steampowered.com/app/548430/"
+    },
+    "646570": {
+      "name": "Slay the Spire",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "219,470",
+      "reviews_percent": 97,
+      "release_string": "23 Jan, 2019",
+      "type": "game",
+      "priority": 23,
+      "added": 1779679404,
+      "is_free_game": false,
+      "tags": [
+        "Indie",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/646570/"
+    },
+    "814380": {
+      "name": "Sekiro™: Shadows Die Twice - GOTY Edition",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "357,828",
+      "reviews_percent": 95,
+      "release_string": "21 Mar, 2019",
+      "type": "game",
+      "priority": 19,
+      "added": 1781753004,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure"
+      ],
+      "store_url": "https://store.steampowered.com/app/814380/"
+    },
+    "881100": {
+      "name": "Noita",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "89,333",
+      "reviews_percent": 95,
+      "release_string": "15 Oct, 2020",
+      "type": "game",
+      "priority": 16,
+      "added": 1783308204,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "Indie",
+        "RPG",
+        "Simulation"
+      ],
+      "store_url": "https://store.steampowered.com/app/881100/"
+    },
+    "949230": {
+      "name": "Cities: Skylines II",
+      "capsule": null,
+      "review_score": 5,
+      "review_desc": "Mixed",
+      "reviews_total": "92,169",
+      "reviews_percent": 56,
+      "release_string": "24 Oct, 2023",
+      "type": "game",
+      "priority": 24,
+      "added": 1779161004,
+      "is_free_game": false,
+      "tags": [
+        "Simulation"
+      ],
+      "store_url": "https://store.steampowered.com/app/949230/"
+    },
+    "975370": {
+      "name": "Dwarf Fortress",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "31,588",
+      "reviews_percent": 95,
+      "release_string": "6 Dec, 2022",
+      "type": "game",
+      "priority": 22,
+      "added": 1780197804,
+      "is_free_game": false,
+      "tags": [
+        "Indie",
+        "Simulation",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/975370/"
+    },
+    "1030300": {
+      "name": "Hollow Knight: Silksong",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "425,643",
+      "reviews_percent": 90,
+      "release_string": "4 Sep, 2025",
+      "type": "game",
+      "priority": 7,
+      "added": 1787973804,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "Indie"
+      ],
+      "store_url": "https://store.steampowered.com/app/1030300/"
+    },
+    "1086940": {
+      "name": "Baldur's Gate 3",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "862,182",
+      "reviews_percent": 97,
+      "release_string": "3 Aug, 2023",
+      "type": "game",
+      "priority": 1,
+      "added": 1791084204,
+      "is_free_game": false,
+      "tags": [
+        "Adventure",
+        "RPG",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/1086940/"
+    },
+    "1091500": {
+      "name": "Cyberpunk 2077",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "987,433",
+      "reviews_percent": 87,
+      "release_string": "9 Dec, 2020",
+      "type": "game",
+      "priority": 2,
+      "added": 1790565804,
+      "is_free_game": false,
+      "tags": [
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/1091500/"
+    },
+    "1145360": {
+      "name": "Hades",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "309,999",
+      "reviews_percent": 98,
+      "release_string": "17 Sep, 2020",
+      "type": "game",
+      "priority": 5,
+      "added": 1789010604,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Indie",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/1145360/"
+    },
+    "1245620": {
+      "name": "ELDEN RING",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "1,158,925",
+      "reviews_percent": 93,
+      "release_string": "24 Feb, 2022",
+      "type": "game",
+      "priority": 0,
+      "added": 1791602604,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/1245620/"
+    },
+    "1627720": {
+      "name": "Lies of P",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "83,908",
+      "reviews_percent": 92,
+      "release_string": "18 Sep, 2023",
+      "type": "game",
+      "priority": 25,
+      "added": 1778642604,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/1627720/"
+    },
+    "1687950": {
+      "name": "Persona 5 Royal",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "142,015",
+      "reviews_percent": 96,
+      "release_string": "20 Oct, 2022",
+      "type": "game",
+      "priority": 21,
+      "added": 1780716204,
+      "is_free_game": false,
+      "tags": [
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/1687950/"
+    },
+    "1794680": {
+      "name": "Vampire Survivors",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "266,431",
+      "reviews_percent": 98,
+      "release_string": "20 Oct, 2022",
+      "type": "game",
+      "priority": 17,
+      "added": 1782789804,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Casual",
+        "Indie",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/1794680/"
+    },
+    "1817230": {
+      "name": "Hi-Fi RUSH",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "36,066",
+      "reviews_percent": 97,
+      "release_string": "25 Jan, 2023",
+      "type": "game",
+      "priority": 18,
+      "added": 1782271404,
+      "is_free_game": false,
+      "tags": [
+        "Action"
+      ],
+      "store_url": "https://store.steampowered.com/app/1817230/"
+    },
+    "1888160": {
+      "name": "ARMORED CORE™ VI FIRES OF RUBICON™",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "86,372",
+      "reviews_percent": 92,
+      "release_string": "24 Aug, 2023",
+      "type": "game",
+      "priority": 20,
+      "added": 1781234604,
+      "is_free_game": false,
+      "tags": [
+        "Action"
+      ],
+      "store_url": "https://store.steampowered.com/app/1888160/"
+    },
+    "2246340": {
+      "name": "Monster Hunter Wilds",
+      "capsule": null,
+      "review_score": 5,
+      "review_desc": "Mixed",
+      "reviews_total": "333,509",
+      "reviews_percent": 50,
+      "release_string": "27 Feb, 2025",
+      "type": "game",
+      "priority": 9,
+      "added": 1786937004,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/2246340/"
+    },
+    "2344520": {
+      "name": "Diablo® IV",
+      "capsule": null,
+      "review_score": 5,
+      "review_desc": "Mixed",
+      "reviews_total": "80,024",
+      "reviews_percent": 65,
+      "release_string": "17 Oct, 2023",
+      "type": "game",
+      "priority": 26,
+      "added": 1778124204,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "Casual",
+        "Massively Multiplayer",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/2344520/"
+    },
+    "2358720": {
+      "name": "Black Myth: Wukong",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "1,213,855",
+      "reviews_percent": 96,
+      "release_string": "19 Aug, 2024",
+      "type": "game",
+      "priority": 3,
+      "added": 1790047404,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/2358720/"
+    },
+    "2379780": {
+      "name": "Balatro",
+      "capsule": null,
+      "review_score": 9,
+      "review_desc": "Overwhelmingly Positive",
+      "reviews_total": "200,018",
+      "reviews_percent": 98,
+      "release_string": "20 Feb, 2024",
+      "type": "game",
+      "priority": 11,
+      "added": 1785900204,
+      "is_free_game": false,
+      "tags": [
+        "Casual",
+        "Indie",
+        "Strategy"
+      ],
+      "store_url": "https://store.steampowered.com/app/2379780/"
+    },
+    "2679460": {
+      "name": "Metaphor: ReFantazio",
+      "capsule": null,
+      "review_score": 8,
+      "review_desc": "Very Positive",
+      "reviews_total": "43,645",
+      "reviews_percent": 90,
+      "release_string": "10 Oct, 2024",
+      "type": "game",
+      "priority": 10,
+      "added": 1786418604,
+      "is_free_game": false,
+      "tags": [
+        "Action",
+        "Adventure",
+        "RPG"
+      ],
+      "store_url": "https://store.steampowered.com/app/2679460/"
+    }
+  }
+}
