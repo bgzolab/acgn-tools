@@ -1,7 +1,14 @@
 # ACGN Tools
 
-自建的 **ACGN（Anime / Comic / Game / Novel）收藏管理工具**，当前聚焦 **Game**：
-先把 Steam 愿望单完整搬进自己的库，再逐步接入 Bangumi、小黑盒等社区，做进度双向同步。
+[![Contributors](https://img.shields.io/github/contributors/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/graphs/contributors)
+[![Forks](https://img.shields.io/github/forks/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/network/members)
+[![Stargazers](https://img.shields.io/github/stars/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/stargazers)
+[![Issues](https://img.shields.io/github/issues/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/issues)
+[![Licence](https://img.shields.io/github/license/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/blob/template/LICENCE)
+[![Telegram](https://img.shields.io/badge/-telegram-black.svg?style=for-the-badge&logo=telegram&colorB=555)](https://t.me/imbGZo)
+
+**ACGN（Anime / Comic / Game / Novel）收藏管理工具**，当前聚焦 **Game**：
+把 Steam 愿望单完整搬进自己的库，逐步接入 Bangumi、小黑盒等社区，做进度双向同步。
 
 > 状态：**MVP / 脚手架阶段**（后端 REST API 已可用，前端为 Vue 3 SPA，Tauri 尚未接入）
 
@@ -172,13 +179,24 @@ node scripts/gen-steam-fixture.mjs
 - [ ] Tauri 桌面端：复用 `acgn-core` / `acgn-store` / `acgn-steam` + `web`
 - [ ] 多端增量同步（基于 `import_runs` 与 `updated_at` 的合并策略）
 
-## 贡献
+## Contributing
 
-1. 从 `main` 切分支（`feat/xxx`、`fix/xxx`）
-2. 提交信息：**标题用英文**，遵循 `type(scope):subject`（如 `feat(steam):support vanity URLs`），正文可用中文
-3. 自测通过后提 PR（合并用 **squash**），等待 CI 审查（opencode-review）
-4. 给 AI agent 的工作约定见 [`AGENTS.md`](AGENTS.md)
+Any contributions made are **greatly appreciated**.
 
+If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
+Don't forget to give the project a star! Thanks again!
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'feat(module):add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+Top contributors:
+
+<a href="https://github.com/bgzolab/acgn-tools/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=bgzolab/acgn-tools" alt="contrib.rocks image" />
+</a>
 ## License
 
-AGPL-3.0，见 [`LICENCE`](LICENCE)。
+All code is licensed under the AGPL-3.0 license. See `LICENSE` for more information.
