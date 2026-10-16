@@ -72,8 +72,26 @@ impl FixtureData {
                     Some(inner) => inner.clone(),
                     None => value,
                 };
-                serde_json::from_value(map)
-                    .map_err(|err| Error::invalid(format!("appdetails fixture 结构不对: {err}")))?
+
+                let mut parsed: BTreeMap<String, AppDetailsResponse> = BTreeMap::new();
+                if let Some(object) = map.as_object() {
+                    for (appid, entry) in object {
+                        let mut response: AppDetailsResponse =
+                            serde_json::from_value(entry.clone()).map_err(|err| {
+                                Error::invalid(format!(
+                                    "appdetails fixture 结构不对（{appid}）: {err}"
+                                ))
+                            })?;
+                        // 与 live 路径（`parse_app_details`）一致：把 data 对象原样存进 raw。
+                        // 否则 fixture 模式下补全出来的条目 `metadata` 恒为 None，会掩盖
+                        // 「导入 → 补全 → 再导入」这类只有真实网络才暴露的问题。
+                        if let Some(data) = response.data.as_mut() {
+                            data.raw = entry.get("data").cloned();
+                        }
+                        parsed.insert(appid.clone(), response);
+                    }
+                }
+                parsed
             }
             _ => BTreeMap::new(),
         };
@@ -124,4 +142,41 @@ fn resolve_paths(path: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
         "fixture 路径不存在：{}",
         path.display()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acgn_core::MetadataLevel;
+
+    /// fixture 路径必须像 live 一样保留原始 data 载荷，否则补全出来的条目
+    /// `metadata` 恒为 None，会掩盖「导入 → 补全 → 再导入」这类问题。
+    #[test]
+    fn restores_raw_payload_from_fixture() {
+        let dir = std::env::temp_dir().join(format!("acgn-fixture-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        std::fs::write(
+            dir.join("wishlist.json"),
+            r#"{"steam_id":"76561198000000000","wishlist":{"1":{"name":"A","type":"game"}}}"#,
+        )
+        .expect("写 wishlist fixture");
+        std::fs::write(
+            dir.join("appdetails.json"),
+            r#"{"1":{"success":true,"data":{"name":"A","type":"game"}}}"#,
+        )
+        .expect("写 appdetails fixture");
+
+        let fixture = FixtureData::load(&dir).expect("fixture 应能载入");
+        assert_eq!(fixture.steam_id.as_deref(), Some("76561198000000000"));
+
+        let response = fixture.app_details("1").expect("应有详情");
+        let data = response.data.as_ref().expect("应有 data");
+        assert!(data.raw.is_some(), "fixture 也应保留原始 data 载荷");
+
+        let item = data.to_source_item("1");
+        assert!(item.metadata.is_some(), "metadata 不能是 None");
+        assert_eq!(item.metadata_level, MetadataLevel::Full);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

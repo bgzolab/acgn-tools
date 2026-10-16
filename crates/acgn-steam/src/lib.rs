@@ -48,15 +48,23 @@ pub fn public_wishlist_url(steam_id: &str, page: u32) -> String {
 }
 
 /// 官方愿望单接口（需要 API Key）；`cursor` 为空表示首页。
+///
+/// 用 `Url` 构造并让参数走 percent-encoding：`next_cursor` 是 Steam 给的 opaque
+/// token，直接字符串拼接遇到 `+` / `&` / `=` 会把 query 截断，第 2 页起拿不到数据。
 pub fn official_wishlist_url(api_key: &str, steam_id: &str, cursor: Option<&str>) -> String {
-    match cursor {
-        Some(cursor) if !cursor.is_empty() => format!(
-            "{API_BASE}/IWishlistService/GetWishlist/v1/?key={api_key}&steamid={steam_id}&cursor={cursor}"
-        ),
-        _ => {
-            format!("{API_BASE}/IWishlistService/GetWishlist/v1/?key={api_key}&steamid={steam_id}")
+    let mut url = reqwest::Url::parse(&format!("{API_BASE}/IWishlistService/GetWishlist/v1/"))
+        .expect("静态 API 地址应当合法");
+
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("key", api_key);
+        pairs.append_pair("steamid", steam_id);
+        if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
+            pairs.append_pair("cursor", cursor);
         }
     }
+
+    url.to_string()
 }
 
 /// 商店详情接口（无需 API Key，但有限流）。
@@ -67,4 +75,27 @@ pub fn app_details_url(appid: &str, country: &str, language: &str) -> String {
 /// vanity URL 转 steamID64（无需 API Key，解析 XML）。
 pub fn vanity_resolve_url(vanity: &str) -> String {
     format!("{COMMUNITY_BASE}/id/{vanity}/?xml=1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `next_cursor` 是 Steam 给的 opaque token：必须 percent-encode，
+    /// 否则含 `+` / `&` / `=` 时 query 会被截断，第 2 页起拿不到数据。
+    #[test]
+    fn official_wishlist_url_encodes_cursor() {
+        let url = official_wishlist_url("KEY", "76561198000000000", None);
+        assert_eq!(
+            url,
+            "https://api.steampowered.com/IWishlistService/GetWishlist/v1/?key=KEY&steamid=76561198000000000"
+        );
+
+        let url = official_wishlist_url("KEY", "76561198000000000", Some("a+b&c=d"));
+        assert!(
+            url.contains("cursor=a%2Bb%26c%3Dd"),
+            "cursor 必须被编码：{url}"
+        );
+        assert!(!url.contains("&c="), "未编码的 & 会截断 query：{url}");
+    }
 }
