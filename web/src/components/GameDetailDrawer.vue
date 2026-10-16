@@ -9,8 +9,7 @@ import {
   type EntryPatch,
   type GameWithEntry,
   type Status,
-} from "../api/types";
-import {
+} from "../api/types";import {
   displayTitle,
   formatDateTime,
   formatMinutes,
@@ -33,12 +32,19 @@ const loading = ref(false);
 const saving = ref(false);
 const refreshing = ref(false);
 const noteDraft = ref("");
-const playtimeHours = ref<string>("");
+/** 以「分钟」为编辑单位：小时 round-trip 会把 121 分钟悄悄写成 120 分钟 */
+const playtimeMinutes = ref<string>("");
 
 const game = computed(() => item.value?.game ?? null);
 const entry = computed(() => item.value?.entry ?? null);
 const title = computed(() => (game.value ? displayTitle(game.value) : ""));
 const subtitle = computed(() => (game.value ? secondaryTitle(game.value) : ""));
+
+const playtimeHint = computed(() => {
+  const minutes = Number.parseInt(playtimeMinutes.value, 10);
+  if (!Number.isFinite(minutes) || minutes <= 0) return "留空并保存可清空时长";
+  return `≈ ${(minutes / 60).toFixed(1)} 小时`;
+});
 
 async function load(id: number) {
   loading.value = true;
@@ -46,9 +52,10 @@ async function load(id: number) {
     const loaded = await getGame(id);
     item.value = loaded;
     noteDraft.value = loaded.entry.note ?? "";
-    playtimeHours.value = loaded.entry.playtime_minutes
-      ? String(Math.round((loaded.entry.playtime_minutes / 60) * 10) / 10)
-      : "";
+    playtimeMinutes.value =
+      loaded.entry.playtime_minutes && loaded.entry.playtime_minutes > 0
+        ? String(loaded.entry.playtime_minutes)
+        : "";
   } catch (error) {
     const { title: toastTitle, message } = errorText(error);
     pushToast("err", toastTitle, message);
@@ -58,16 +65,22 @@ async function load(id: number) {
   }
 }
 
-async function patch(patchBody: EntryPatch) {
-  if (!item.value) return;
+/**
+ * 提交补丁。成功返回更新后的条目，失败返回 `null`
+ * （错误 toast 已在此处弹过，调用方不要无条件再弹「已保存」）。
+ */
+async function patch(patchBody: EntryPatch): Promise<GameWithEntry | null> {
+  if (!item.value) return null;
   saving.value = true;
   try {
     const updated = await patchGame(item.value.game.id, patchBody);
     item.value = updated;
     emit("updated", updated);
+    return updated;
   } catch (error) {
     const { title: toastTitle, message } = errorText(error);
     pushToast("err", toastTitle, message);
+    return null;
   } finally {
     saving.value = false;
   }
@@ -94,10 +107,29 @@ function setProgress(value: number) {
 }
 
 async function saveNoteAndPlaytime() {
-  const hours = Number.parseFloat(playtimeHours.value);
-  const minutes = Number.isFinite(hours) ? Math.max(0, Math.round(hours * 60)) : -1;
-  await patch({ note: noteDraft.value, playtime_minutes: minutes });
-  pushToast("ok", "已保存", "备注与时长已更新");
+  if (!item.value) return;
+
+  const patchBody: EntryPatch = { note: noteDraft.value };
+  const raw = playtimeMinutes.value.trim();
+
+  if (raw === "") {
+    // 留空 = 清空时长
+    if (item.value.entry.playtime_minutes !== null) patchBody.playtime_minutes = -1;
+  } else {
+    const minutes = Number.parseInt(raw, 10);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      pushToast("warn", "时长不合法", "请填写非负整数（分钟），或留空以清空");
+      return;
+    }
+    // 只在真的变化时才提交，避免无谓写入
+    if (minutes !== (item.value.entry.playtime_minutes ?? -1)) {
+      patchBody.playtime_minutes = minutes;
+    }
+  }
+
+  const saved = await patch(patchBody);
+  // 只有真的保存成功才提示「已保存」：失败时 patch() 已经弹过错误 toast
+  if (saved) pushToast("ok", "已保存", "备注与时长已更新");
 }
 
 async function doRefresh() {
@@ -206,8 +238,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         </div>
 
         <div class="field">
-          <label class="label" for="playtime">游玩时长（小时）</label>
-          <input id="playtime" v-model="playtimeHours" class="input" inputmode="decimal" placeholder="例如 12.5" />
+          <label class="label" for="playtime">游玩时长（分钟）</label>
+          <input
+            id="playtime"
+            v-model="playtimeMinutes"
+            class="input"
+            inputmode="numeric"
+            placeholder="例如 750"
+          />
+          <div class="hint" style="margin-top: 4px">{{ playtimeHint }}</div>
         </div>
 
         <div class="field">
