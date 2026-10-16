@@ -10,6 +10,7 @@ use axum::extract::State;
 use serde::Deserialize;
 
 use crate::error::{ApiError, ApiResult};
+use crate::extract::ValidJson;
 use crate::state::AppState;
 
 /// POST /api/enrich
@@ -22,7 +23,7 @@ pub struct EnrichRequest {
 
 pub async fn enrich(
     State(state): State<AppState>,
-    Json(request): Json<EnrichRequest>,
+    ValidJson(request): ValidJson<EnrichRequest>,
 ) -> ApiResult<Json<EnrichSummary>> {
     let started = Instant::now();
     let limit = request.limit.unwrap_or(20).clamp(1, 200);

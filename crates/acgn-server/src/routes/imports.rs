@@ -5,11 +5,12 @@ use acgn_core::{
 };
 use acgn_store::ImportRequest;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::error::{ApiError, ApiResult};
+use crate::extract::{ValidJson, ValidPath, ValidQuery};
 use crate::state::AppState;
 
 /// 所有导入接口的统一返回。
@@ -40,7 +41,7 @@ fn default_true() -> bool {
 
 pub async fn import_steam_wishlist(
     State(state): State<AppState>,
-    Json(request): Json<SteamWishlistRequest>,
+    ValidJson(request): ValidJson<SteamWishlistRequest>,
 ) -> ApiResult<Json<ImportResponse>> {
     let fetch = state.steam.fetch_wishlist(&request.steam_id).await?;
 
@@ -94,7 +95,7 @@ pub struct JsonImportRequest {
 
 pub async fn import_json(
     State(state): State<AppState>,
-    Json(request): Json<JsonImportRequest>,
+    ValidJson(request): ValidJson<JsonImportRequest>,
 ) -> ApiResult<Json<ImportResponse>> {
     if request.items.is_empty() {
         return Err(ApiError(Error::invalid("items 不能为空")));
@@ -102,6 +103,21 @@ pub async fn import_json(
 
     let mode = request.mode.unwrap_or_else(|| "json".to_string());
     let mut items = request.items;
+
+    // 混源导入会让 missing 统计与运行记录里的 source 只反映其中一个来源：
+    // 要么显式用请求级 source 统一，要么拆成多次导入。
+    if request.source.is_none() {
+        let mut distinct: Vec<&'static str> =
+            items.iter().map(|item| item.source.as_str()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if distinct.len() > 1 {
+            return Err(ApiError(Error::invalid(format!(
+                "items 里混用了多个来源（{}）：请显式指定请求级 source，或拆成多次导入",
+                distinct.join(" / ")
+            ))));
+        }
+    }
 
     // 请求级 source 覆盖条目自己的 source：离线导入时只需要写一次来源。
     let source = match request.source {
@@ -150,7 +166,7 @@ pub struct RunsQuery {
 
 pub async fn list_runs(
     State(state): State<AppState>,
-    Query(query): Query<RunsQuery>,
+    ValidQuery(query): ValidQuery<RunsQuery>,
 ) -> ApiResult<Json<Vec<ImportRun>>> {
     let runs = state.db.list_import_runs(query.limit.unwrap_or(20)).await?;
     Ok(Json(runs))
@@ -159,7 +175,7 @@ pub async fn list_runs(
 /// GET /api/imports/{id}
 pub async fn get_run(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    ValidPath(id): ValidPath<i64>,
 ) -> ApiResult<Json<ImportRun>> {
     let run = state
         .db

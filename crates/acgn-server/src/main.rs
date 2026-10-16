@@ -6,12 +6,10 @@
 //! acgn-server stats    # 打印数据库概览
 //! ```
 
-mod config;
-mod error;
-mod routes;
-mod state;
-
 use acgn_core::{ImportOptions, Source};
+use acgn_server::config::AppConfig;
+use acgn_server::state::AppState;
+use acgn_server::{config as server_config, routes};
 use acgn_steam::{SteamClient, SteamConfig};
 use acgn_store::{Db, ImportRequest};
 use anyhow::Context;
@@ -19,9 +17,6 @@ use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-
-use crate::config::AppConfig;
-use crate::state::AppState;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -96,7 +91,7 @@ async fn main() -> anyhow::Result<()> {
         bind: cli.bind.clone(),
         db_path: cli.db.clone(),
         web_dir: cli.web_dir.clone(),
-        cors_origins: crate::config::cors_origins_from_env(),
+        cors_origins: server_config::cors_origins_from_env(),
         steam: steam_config.clone(),
     };
 

@@ -3,16 +3,17 @@
 use acgn_core::{EntryPatch, Error, GameListQuery, GameWithEntry, Page, Source};
 use acgn_store::GameFilters;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::State;
 use serde_json::{Value, json};
 
 use crate::error::{ApiError, ApiResult};
+use crate::extract::{ValidJson, ValidPath, ValidQuery};
 use crate::state::AppState;
 
 /// GET /api/games
 pub async fn list_games(
     State(state): State<AppState>,
-    Query(query): Query<GameListQuery>,
+    ValidQuery(query): ValidQuery<GameListQuery>,
 ) -> ApiResult<Json<Page<GameWithEntry>>> {
     let filters = GameFilters::from_query(&query);
     let page = state
@@ -30,7 +31,7 @@ pub async fn list_games(
 /// GET /api/games/{id}
 pub async fn get_game(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    ValidPath(id): ValidPath<i64>,
 ) -> ApiResult<Json<GameWithEntry>> {
     let item = state
         .db
@@ -43,8 +44,8 @@ pub async fn get_game(
 /// PATCH /api/games/{id}
 pub async fn patch_game(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
-    Json(patch): Json<EntryPatch>,
+    ValidPath(id): ValidPath<i64>,
+    ValidJson(patch): ValidJson<EntryPatch>,
 ) -> ApiResult<Json<GameWithEntry>> {
     let updated = state.db.update_entry(id, &patch).await?;
     Ok(Json(updated))
@@ -53,7 +54,7 @@ pub async fn patch_game(
 /// POST /api/games/{id}/refresh-metadata —— 抓取单个条目的商店详情。
 pub async fn refresh_metadata(
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    ValidPath(id): ValidPath<i64>,
 ) -> ApiResult<Json<Value>> {
     let item = state
         .db
