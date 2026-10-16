@@ -1,0 +1,13 @@
+[package]
+name = "acgn-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ACGN 管理器的领域模型与共享契约（无 I/O 依赖）"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
