@@ -50,6 +50,10 @@ async function load(id: number) {
   loading.value = true;
   try {
     const loaded = await getGame(id);
+    // 慢响应守卫：等待期间抽屉可能已经切到别的条目。没有这道守卫时，
+    // A 的迟到响应会把 item 覆盖成 A 的数据，而 props.gameId 已经是 B——
+    // 用户随后改备注／评分就会 PATCH 到 A 上（静默错写）。
+    if (props.gameId !== id) return;
     item.value = loaded;
     noteDraft.value = loaded.entry.note ?? "";
     playtimeMinutes.value =
@@ -57,11 +61,12 @@ async function load(id: number) {
         ? String(loaded.entry.playtime_minutes)
         : "";
   } catch (error) {
+    if (props.gameId !== id) return;
     const { title: toastTitle, message } = errorText(error);
     pushToast("err", toastTitle, message);
     emit("close");
   } finally {
-    loading.value = false;
+    if (props.gameId === id) loading.value = false;
   }
 }
 

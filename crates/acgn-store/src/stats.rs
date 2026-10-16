@@ -73,11 +73,17 @@ impl Db {
                 COALESCE(g.price_currency, 'UNKNOWN')                                          AS currency,
                 COALESCE(SUM(COALESCE(g.price_initial, 0)), 0)                                 AS list_price_cents,
                 COALESCE(SUM(COALESCE(g.price_final, g.price_initial, 0)), 0)                  AS current_price_cents,
-                COUNT(*)                                                                       AS item_count
+                -- 只统计「有价格信息」的条目：否则还没补全元数据的愿望单条目会把条目数虚增，
+                -- 与聚合金额的口径不一致（金额里它们贡献 0）
+                COALESCE(SUM(CASE WHEN g.price_currency IS NOT NULL
+                                    OR g.price_final IS NOT NULL
+                                    OR g.price_initial IS NOT NULL
+                             THEN 1 ELSE 0 END), 0)                                        AS item_count
              FROM games g
              JOIN library_entries e ON e.game_id = g.id
              WHERE e.status = 'wishlist' AND COALESCE(g.is_free, 0) = 0
              GROUP BY currency
+             HAVING item_count > 0
              ORDER BY current_price_cents DESC",
         )
         .fetch_all(&self.pool)
