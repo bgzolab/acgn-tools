@@ -54,6 +54,16 @@ fn order_sql(sort: Option<&str>) -> &'static str {
     }
 }
 
+/// `LIKE` 统一追加的转义子句（配合 [`escape_like`]）。
+const LIKE_ESCAPE: &str = " ESCAPE '\\'";
+
+/// 把用户输入里的 `%` / `_` / `\` 转义成字面量：搜「100%」不该匹配所有以 100 结尾的串。
+fn escape_like(term: &str) -> String {
+    term.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn apply_filters(qb: &mut QueryBuilder<'_, Sqlite>, filters: &GameFilters) {
     qb.push(" WHERE 1 = 1");
 
@@ -75,17 +85,23 @@ fn apply_filters(qb: &mut QueryBuilder<'_, Sqlite>, filters: &GameFilters) {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let like = format!("%{term}%");
+        // 用户输入里的 % / _ 是字面量，不是通配符：搜「100%」不该匹配所有以 100 结尾的串
+        let like = format!("%{}%", escape_like(term));
         qb.push(" AND (g.title LIKE ")
             .push_bind(like.clone())
+            .push(LIKE_ESCAPE)
             .push(" OR COALESCE(g.title_zh, '') LIKE ")
             .push_bind(like.clone())
+            .push(LIKE_ESCAPE)
             .push(" OR COALESCE(g.developers, '') LIKE ")
             .push_bind(like.clone())
+            .push(LIKE_ESCAPE)
             .push(" OR COALESCE(g.publishers, '') LIKE ")
-            .push_bind(like)
+            .push_bind(like.clone())
+            .push(LIKE_ESCAPE)
             .push(" OR COALESCE(g.tags, '') LIKE ")
-            .push_bind(format!("%{term}%"))
+            .push_bind(like)
+            .push(LIKE_ESCAPE)
             .push(")");
     }
 }

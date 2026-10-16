@@ -54,6 +54,24 @@ async fn import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
     .expect("导入不应失败")
 }
 
+/// 仅预览（dry_run）：必须与真实导入同一口径，且不写库。
+async fn dry_import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
+    db.import_items(&ImportRequest {
+        source: Source::Steam,
+        mode: "steam_wishlist",
+        items,
+        options: ImportOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+        args: None,
+        source_mode: "test",
+        extra_warnings: Vec::new(),
+    })
+    .await
+    .expect("预览不应失败")
+}
+
 #[tokio::test]
 async fn import_is_idempotent_and_updates_metadata() {
     let db = setup().await;
@@ -279,6 +297,174 @@ async fn dry_run_reports_without_writing() {
         .await
         .unwrap();
     assert_eq!(page.total, 0, "预览不应写入任何数据");
+}
+
+#[tokio::test]
+async fn dry_run_reports_the_same_diff_as_a_real_import() {
+    let db = setup().await;
+    import(&db, &[item("700", "Kappa"), item("701", "Lambda")]).await;
+
+    // 完全一致 → 预览应报 unchanged=2（以前会误报 updated=2）
+    let preview = dry_import(&db, &[item("700", "Kappa"), item("701", "Lambda")]).await;
+    assert_eq!(
+        (preview.added, preview.updated, preview.unchanged),
+        (0, 0, 2)
+    );
+
+    // 改了标题 → 预览应报 updated=1，且不落库
+    let preview = dry_import(
+        &db,
+        &[item("700", "Kappa: Remastered"), item("701", "Lambda")],
+    )
+    .await;
+    assert_eq!(
+        (preview.added, preview.updated, preview.unchanged),
+        (0, 1, 1)
+    );
+    let untouched = db
+        .get_game_by_external(Source::Steam, "700")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(untouched.game.title, "Kappa", "预览不允许改数据");
+
+    // 全新条目 → added=1
+    let preview = dry_import(&db, &[item("702", "Mu")]).await;
+    assert_eq!(
+        (preview.added, preview.updated, preview.unchanged),
+        (1, 0, 0)
+    );
+}
+
+#[tokio::test]
+async fn filtered_out_items_are_not_reported_as_missing() {
+    let db = setup().await;
+    let mut dlc = item("703", "Kappa DLC");
+    dlc.media_kind = MediaKind::Dlc;
+    import(&db, &[item("700", "Kappa"), dlc.clone()]).await;
+
+    let items = [item("700", "Kappa"), dlc];
+    let summary = db
+        .import_items(&ImportRequest {
+            source: Source::Steam,
+            mode: "steam_wishlist",
+            items: &items,
+            options: ImportOptions {
+                include_dlc: false,
+                ..Default::default()
+            },
+            args: None,
+            source_mode: "test",
+            extra_warnings: Vec::new(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(summary.skipped, 1, "DLC 应被过滤");
+    assert_eq!(
+        summary.missing, 0,
+        "被过滤的条目仍存在于来源中，不能算 missing"
+    );
+
+    // 预览口径一致
+    let preview = db
+        .import_items(&ImportRequest {
+            source: Source::Steam,
+            mode: "steam_wishlist",
+            items: &items,
+            options: ImportOptions {
+                include_dlc: false,
+                dry_run: true,
+                ..Default::default()
+            },
+            args: None,
+            source_mode: "test",
+            extra_warnings: Vec::new(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(preview.skipped, 1);
+    assert_eq!(preview.missing, 0);
+}
+
+#[tokio::test]
+async fn metadata_json_is_persisted_and_stable() {
+    let db = setup().await;
+
+    let mut with_payload = item("800", "Nu");
+    with_payload.metadata = Some(serde_json::json!({ "appid": 800, "priority": 3 }));
+
+    import(&db, &[with_payload.clone()]).await;
+
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT metadata_json FROM games WHERE external_id = ?")
+            .bind("800")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let raw = raw.expect("metadata_json 必须落库（契约见 dto.rs / appdetails.rs 注释）");
+    assert!(raw.contains("\"appid\""), "应保留来源原始载荷：{raw}");
+
+    // 同样的载荷再导入：不应因为 JSON 文本差异被判定为更新
+    let summary = import(&db, &[with_payload]).await;
+    assert_eq!(summary.updated, 0);
+    assert_eq!(summary.unchanged, 1);
+}
+
+#[tokio::test]
+async fn search_escapes_like_wildcards() {
+    let db = setup().await;
+    import(
+        &db,
+        &[item("900", "100% Orange Juice"), item("901", "100 Bullets")],
+    )
+    .await;
+
+    let page = db
+        .list_games(
+            &GameFilters {
+                q: Some("100%".to_string()),
+                ..Default::default()
+            },
+            None,
+            1,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.total, 1, "`%` 必须当字面量");
+    assert_eq!(page.items[0].game.title, "100% Orange Juice");
+
+    let page = db
+        .list_games(
+            &GameFilters {
+                q: Some("_".to_string()),
+                ..Default::default()
+            },
+            None,
+            1,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.total, 0, "`_` 必须当字面量，否则会匹配任意单字符");
+
+    // 字面量下划线仍然搜得到
+    let db2 = setup().await;
+    import(&db2, &[item("902", "Foo_Bar")]).await;
+    let page = db2
+        .list_games(
+            &GameFilters {
+                q: Some("Foo_".to_string()),
+                ..Default::default()
+            },
+            None,
+            1,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.total, 1);
 }
 
 #[tokio::test]

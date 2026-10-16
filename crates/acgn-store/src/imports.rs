@@ -281,15 +281,26 @@ impl Db {
         }
 
         if req.options.dry_run {
+            // 预览与真实导入共用同一套差异计算：报「会更新 N 条」就真的是 N 条，
+            // 而不是「来源里有 + 本地已存在」这种口径不一致的估算。
             for item in req.items {
+                // 先记下「来源里确实还有它」——被 include_dlc 之类的过滤跳过的条目
+                // 仍然存在于来源中，不能算进 missing。
+                previous.remove(&item.external_id);
                 if !accepted(item, &req.options) {
                     summary.skipped += 1;
                     continue;
                 }
-                if previous.remove(&item.external_id).is_some() {
-                    summary.updated += 1;
-                } else {
-                    summary.added += 1;
+                match load_row(&self.pool, item.source, &item.external_id).await? {
+                    Some(row) => {
+                        let plan = plan_merge(&row, item, now)?;
+                        if plan.changed() {
+                            summary.updated += 1;
+                        } else {
+                            summary.unchanged += 1;
+                        }
+                    }
+                    None => summary.added += 1,
                 }
             }
             summary.missing = previous.len() as i64;
@@ -298,11 +309,12 @@ impl Db {
 
         let mut tx = self.pool.begin().await.db()?;
         for item in req.items {
+            // 同上：过滤只影响「是否落库」，不影响「来源里是否还有它」
+            previous.remove(&item.external_id);
             if !accepted(item, &req.options) {
                 summary.skipped += 1;
                 continue;
             }
-            previous.remove(&item.external_id);
 
             match upsert_item(&mut tx, item, now).await? {
                 MetadataOutcome::Added(id) => {
@@ -343,12 +355,16 @@ impl Db {
 
         let outcome = match load_in_tx(&mut tx, item.source, &item.external_id).await? {
             Some(row) => {
+                let metadata_json_changed = metadata_json_differs(&row, item);
                 let mut game = row.into_domain()?.game;
                 let changed = merge_metadata(&mut game, item);
                 let had_metadata = game.metadata_updated_at.is_some();
                 game.metadata_updated_at = Some(now);
 
                 update_game_in_tx(&mut tx, &game, now).await?;
+                if metadata_json_changed {
+                    write_metadata_json_in_tx(&mut tx, game.id, item, now).await?;
+                }
                 sqlx::query("UPDATE library_entries SET last_synced_at = ? WHERE game_id = ?")
                     .bind(now)
                     .bind(game.id)
@@ -356,7 +372,7 @@ impl Db {
                     .await
                     .db()?;
 
-                if changed || !had_metadata {
+                if changed || metadata_json_changed || !had_metadata {
                     MetadataOutcome::Updated(game.id)
                 } else {
                     MetadataOutcome::Unchanged(game.id)
@@ -375,6 +391,7 @@ impl Db {
                     merge_metadata(&mut game, item);
                     game.metadata_updated_at = Some(now);
                     update_game_in_tx(&mut tx, &game, now).await?;
+                    write_metadata_json_in_tx(&mut tx, game.id, item, now).await?;
                     sqlx::query("UPDATE library_entries SET last_synced_at = ? WHERE game_id = ?")
                         .bind(now)
                         .bind(game.id)
@@ -384,7 +401,8 @@ impl Db {
                     MetadataOutcome::Updated(game.id)
                 } else {
                     let game = game_from_item(item, now, true);
-                    let game_id = insert_game_in_tx(&mut tx, &game, now).await?;
+                    let game_id =
+                        insert_game_in_tx(&mut tx, &game, metadata_to_text(item), now).await?;
                     let mut entry = new_entry(game_id, item, now);
                     entry.last_synced_at = Some(now);
                     insert_entry_in_tx(&mut tx, &entry).await?;
@@ -481,25 +499,40 @@ async fn upsert_item(
     }
 
     let game = game_from_item(item, now, false);
-    let game_id = insert_game_in_tx(tx, &game, now).await?;
+    let game_id = insert_game_in_tx(tx, &game, metadata_to_text(item), now).await?;
     let entry = new_entry(game_id, item, now);
     insert_entry_in_tx(tx, &entry).await?;
 
     Ok(MetadataOutcome::Added(game_id))
 }
 
-async fn merge_existing(
-    tx: &mut Transaction<'_, Sqlite>,
-    row: GameEntryRow,
-    item: &SourceItem,
-    now: DateTime<Utc>,
-) -> Result<MetadataOutcome> {
+/// 一次合并的「计划」：只算差异，不落库。
+///
+/// 真实导入与 `dry_run` 预览共用它，保证两者口径一致（预览报「会更新 N 条」必须是
+/// 真的会写 N 条，而不是「来源里有 + 本地已存在」）。
+struct MergePlan {
+    game: Game,
+    entry: LibraryEntry,
+    metadata_changed: bool,
+    metadata_json_changed: bool,
+    entry_changed: bool,
+}
+
+impl MergePlan {
+    fn changed(&self) -> bool {
+        self.metadata_changed || self.metadata_json_changed || self.entry_changed
+    }
+}
+
+/// 把来源条目合并到已有行上（纯计算）。
+fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Result<MergePlan> {
     let GameWithEntry {
         mut game,
         mut entry,
-    } = row.into_domain()?;
+    } = row.clone().into_domain()?;
 
     let metadata_changed = merge_metadata(&mut game, item);
+    let metadata_json_changed = metadata_json_differs(row, item);
 
     let mut entry_changed = false;
     // SQLite 的时间戳只有微秒精度，来源可能给到纳秒：必须按微秒比较，
@@ -525,27 +558,70 @@ async fn merge_existing(
         entry_changed = true;
     }
 
-    if metadata_changed {
-        update_game_in_tx(tx, &game, now).await?;
-    }
-
     if entry_changed {
         entry.updated_at = now;
         entry.last_synced_at = Some(now);
-        update_entry_in_tx(tx, &entry).await?;
+    }
+
+    Ok(MergePlan {
+        game,
+        entry,
+        metadata_changed,
+        metadata_json_changed,
+        entry_changed,
+    })
+}
+
+/// `metadata_json` 的比较：解析后按值比，文本顺序/空白差异不算变化。
+fn metadata_json_differs(row: &GameEntryRow, item: &SourceItem) -> bool {
+    let Some(incoming) = &item.metadata else {
+        return false;
+    };
+    match row
+        .metadata_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+    {
+        Some(existing) => existing != *incoming,
+        None => true,
+    }
+}
+
+fn metadata_to_text(item: &SourceItem) -> Option<String> {
+    item.metadata.as_ref().map(|value| value.to_string())
+}
+
+async fn merge_existing(
+    tx: &mut Transaction<'_, Sqlite>,
+    row: GameEntryRow,
+    item: &SourceItem,
+    now: DateTime<Utc>,
+) -> Result<MetadataOutcome> {
+    let plan = plan_merge(&row, item, now)?;
+
+    if plan.metadata_changed {
+        update_game_in_tx(tx, &plan.game, now).await?;
+    }
+
+    if plan.metadata_json_changed {
+        write_metadata_json_in_tx(tx, plan.game.id, item, now).await?;
+    }
+
+    if plan.entry_changed {
+        update_entry_in_tx(tx, &plan.entry).await?;
     } else {
         sqlx::query("UPDATE library_entries SET last_synced_at = ? WHERE game_id = ?")
             .bind(now)
-            .bind(game.id)
+            .bind(plan.game.id)
             .execute(&mut **tx)
             .await
             .db()?;
     }
 
-    if metadata_changed || entry_changed {
-        Ok(MetadataOutcome::Updated(game.id))
+    if plan.changed() {
+        Ok(MetadataOutcome::Updated(plan.game.id))
     } else {
-        Ok(MetadataOutcome::Unchanged(game.id))
+        Ok(MetadataOutcome::Unchanged(plan.game.id))
     }
 }
 
@@ -720,13 +796,42 @@ async fn load_in_tx(
     source: Source,
     external_id: &str,
 ) -> Result<Option<GameEntryRow>> {
+    load_row(&mut *conn, source, external_id).await
+}
+
+/// 通用读取：连接池（预览）与事务连接都能用。
+async fn load_row<'e, E>(
+    executor: E,
+    source: Source,
+    external_id: &str,
+) -> Result<Option<GameEntryRow>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let mut qb = QueryBuilder::new(SELECT_GAME_ENTRY);
     qb.push(" WHERE g.source = ")
         .push_bind(source.as_str())
         .push(" AND g.external_id = ")
         .push_bind(external_id);
 
-    qb.build_query_as().fetch_optional(&mut *conn).await.db()
+    qb.build_query_as().fetch_optional(executor).await.db()
+}
+
+/// 写入来源原始载荷（`games.metadata_json`）。
+async fn write_metadata_json_in_tx(
+    conn: &mut SqliteConnection,
+    game_id: i64,
+    item: &SourceItem,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query("UPDATE games SET metadata_json = ?, updated_at = ? WHERE id = ?")
+        .bind(metadata_to_text(item))
+        .bind(now)
+        .bind(game_id)
+        .execute(&mut *conn)
+        .await
+        .db()?;
+    Ok(())
 }
 
 async fn game_id_in_tx(
@@ -745,6 +850,7 @@ async fn game_id_in_tx(
 async fn insert_game_in_tx(
     conn: &mut SqliteConnection,
     game: &Game,
+    metadata_json: Option<String>,
     now: DateTime<Utc>,
 ) -> Result<i64> {
     let result = sqlx::query(
@@ -779,7 +885,7 @@ async fn insert_game_in_tx(
     .bind(strings_json(&game.genres))
     .bind(strings_json(&game.platforms))
     .bind(strings_json(&game.tags))
-    .bind(Option::<String>::None)
+    .bind(metadata_json)
     .bind(game.metadata_updated_at)
     .bind(now)
     .bind(now)

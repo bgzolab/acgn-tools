@@ -35,6 +35,8 @@ pub struct GameEntryRow {
     pub genres: String,
     pub platforms: String,
     pub tags: String,
+    /// 来源侧原始载荷（JSON 文本），用于以后补字段 / 排查
+    pub metadata_json: Option<String>,
     pub metadata_updated_at: Option<DateTime<Utc>>,
     pub g_created_at: DateTime<Utc>,
     pub g_updated_at: DateTime<Utc>,
@@ -200,6 +202,7 @@ SELECT
     g.genres              AS genres,
     g.platforms           AS platforms,
     g.tags                AS tags,
+    g.metadata_json       AS metadata_json,
     g.metadata_updated_at AS metadata_updated_at,
     g.created_at          AS g_created_at,
     g.updated_at          AS g_updated_at,
