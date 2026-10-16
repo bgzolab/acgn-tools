@@ -1,0 +1,25 @@
+{
+  "name": "acgn-tools-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ACGN 管理器前端（Vue 3 + Vite + TS），未来直接复用到 Tauri",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview --port 4173"
+  },
+  "dependencies": {
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44",
+    "vue-router": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vue-tsc": "^3.3.13"
+  }
+}
