@@ -23,6 +23,11 @@ pub struct SteamConfig {
     /// 元数据补全并发数。
     pub enrich_concurrency: usize,
     /// 每批之间的间隔（毫秒），用于规避 appdetails 限流。
+    ///
+    /// appdetails 的实测预算约为 **200 请求 / 5 分钟（≈0.67 req/s）**：
+    /// 并发 1 + 1500ms 间隔刚好落在这个预算内。速率过高会被 429 拦住（会被优雅处理，
+    /// 但用户得等冷却），所以默认值偏保守，可用 `STEAM_ENRICH_CONCURRENCY` /
+    /// `STEAM_ENRICH_DELAY_MS` 调整。
     pub enrich_delay_ms: u64,
 }
 
@@ -34,12 +39,12 @@ impl Default for SteamConfig {
             language: "schinese".to_string(),
             fixture: None,
             user_agent: format!(
-                "acgn-tools/{} (+https://github.com/bgzo/acgn-tools)",
+                "acgn-tools/{} (+https://github.com/bgzolab/acgn-tools)",
                 acgn_core::VERSION
             ),
             timeout: Duration::from_secs(25),
-            enrich_concurrency: 2,
-            enrich_delay_ms: 400,
+            enrich_concurrency: 1,
+            enrich_delay_ms: 1500,
         }
     }
 }
@@ -69,6 +74,18 @@ impl SteamConfig {
             if !fixture.is_empty() {
                 config.fixture = Some(PathBuf::from(fixture));
             }
+        }
+        // 补全速率：默认 0.67 req/s（appdetails 的实测预算），需要更快要自己承担 429 风险
+        if let Ok(value) = std::env::var("STEAM_ENRICH_CONCURRENCY")
+            && let Ok(parsed) = value.trim().parse::<usize>()
+            && parsed > 0
+        {
+            config.enrich_concurrency = parsed;
+        }
+        if let Ok(value) = std::env::var("STEAM_ENRICH_DELAY_MS")
+            && let Ok(parsed) = value.trim().parse::<u64>()
+        {
+            config.enrich_delay_ms = parsed;
         }
         config
     }

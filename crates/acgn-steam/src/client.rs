@@ -27,6 +27,9 @@ const MAX_WISHLIST_PAGES: u32 = 60;
 /// 官方接口最多翻多少页（分页语义若变化，靠告警暴露而不是静默截断）。
 const MAX_OFFICIAL_PAGES: u32 = 60;
 
+/// 商店详情接口的兜底国家：国区不售的条目只有换区才能拿到数据。
+const FALLBACK_COUNTRY: &str = "us";
+
 /// reqwest 错误 → 领域错误。
 ///
 /// **必须脱敏**：reqwest 的 `Display` 会带上完整请求 URL（含 query），而官方愿望单接口的
@@ -241,12 +244,21 @@ impl SteamClient {
                     resolved_via,
                 })
             }
-            Err(err) if self.config.has_api_key() => {
-                warnings.push(format!("公开愿望单接口不可用（{err}），回退到官方 Web API"));
+            Err(err) => {
+                // 公开接口（带名字/封面）Steam 已对匿名访问收紧；官方接口允许匿名调用，
+                // 所以无论有没有配置 Key 都要回退，否则用户会卡在一个无解的错误上。
+                warnings.push(format!(
+                    "公开愿望单接口不可用（{err}），已回退到官方 Web API{}",
+                    if self.config.has_api_key() {
+                        "（带 Key）"
+                    } else {
+                        "（匿名）"
+                    }
+                ));
                 let (items, mut extra) = self.fetch_official_wishlist(&steam_id).await?;
                 warnings.append(&mut extra);
                 warnings.push(
-                    "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取详情"
+                    "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取名称/价格/简介"
                         .to_string(),
                 );
                 Ok(WishlistFetch {
@@ -257,7 +269,6 @@ impl SteamClient {
                     resolved_via,
                 })
             }
-            Err(err) => Err(err),
         }
     }
 
@@ -282,6 +293,16 @@ impl SteamClient {
                 .net()?;
 
             let status = response.status();
+
+            // reqwest 默认跟随重定向：Steam 收紧匿名访问后会把 wishlistdata 302 到商店首页，
+            // 拿到的是商店 HTML。这种情况必须报「接口不可用」，不能当成「愿望单为空」，
+            // 否则用户会去反复检查自己的隐私设置。
+            let final_path = response.url().path().to_string();
+            if !final_path.contains("/wishlist/") {
+                return Err(Error::rejected(format!(
+                    "公开愿望单接口已不再对匿名访问开放（被重定向到 {final_path}）"
+                )));
+            }
             if status.as_u16() == 403 || status.as_u16() == 401 {
                 return Err(Error::rejected(
                     "Steam 拒绝了愿望单请求：请把「个人资料」「游戏详情」「愿望单」都设为公开",
@@ -353,11 +374,8 @@ impl SteamClient {
         &self,
         steam_id: &str,
     ) -> Result<(Vec<SourceItem>, Vec<String>)> {
-        let key = self
-            .config
-            .api_key
-            .as_ref()
-            .ok_or_else(|| Error::invalid("缺少 STEAM_API_KEY"))?;
+        // 该接口实测允许匿名调用（2026-10）；配置了 Key 才带上
+        let key = self.config.api_key.as_deref();
 
         let mut warnings = Vec::new();
         let mut items: Vec<SourceItem> = Vec::new();
@@ -442,8 +460,27 @@ impl SteamClient {
     }
 
     /// 单条 appdetails（限流安全：调用方控制节奏）。
+    ///
+    /// 国区不售的条目在 `cc=cn` 下会返回 `success:false`（联机商店不卖，但数据存在），
+    /// 因此配置的国家拿不到时用 `us` 再试一次——否则用户会看到一堆「可能已下架」的假失败。
     async fn fetch_app_details_live(&self, appid: &str) -> Result<Option<SourceItem>> {
-        let url = app_details_url(appid, &self.config.country, &self.config.language);
+        let primary = self
+            .fetch_app_details_for_country(appid, &self.config.country)
+            .await?;
+        if primary.is_some() || self.config.country == FALLBACK_COUNTRY {
+            return Ok(primary);
+        }
+
+        self.fetch_app_details_for_country(appid, FALLBACK_COUNTRY)
+            .await
+    }
+
+    async fn fetch_app_details_for_country(
+        &self,
+        appid: &str,
+        country: &str,
+    ) -> Result<Option<SourceItem>> {
+        let url = app_details_url(appid, country, &self.config.language);
         let response = self
             .http
             .get(url)

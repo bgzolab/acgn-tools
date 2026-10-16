@@ -47,17 +47,24 @@ pub fn public_wishlist_url(steam_id: &str, page: u32) -> String {
     format!("{STORE_BASE}/wishlist/profiles/{steam_id}/wishlistdata/?p={page}")
 }
 
-/// 官方愿望单接口（需要 API Key）；`cursor` 为空表示首页。
+/// 官方愿望单接口；`api_key` 与 `cursor` 都是可选的。
 ///
+/// 实测（2026-10）该接口**允许匿名调用**，不需要 API Key；`key` 只在配置了才带上。
 /// 用 `Url` 构造并让参数走 percent-encoding：`next_cursor` 是 Steam 给的 opaque
-/// token，直接字符串拼接遇到 `+` / `&` / `=` 会把 query 截断，第 2 页起拿不到数据。
-pub fn official_wishlist_url(api_key: &str, steam_id: &str, cursor: Option<&str>) -> String {
+/// token，直接字符串拼接遇到 `+` / `&` / `=` 会把 query 截断。
+pub fn official_wishlist_url(
+    api_key: Option<&str>,
+    steam_id: &str,
+    cursor: Option<&str>,
+) -> String {
     let mut url = reqwest::Url::parse(&format!("{API_BASE}/IWishlistService/GetWishlist/v1/"))
         .expect("静态 API 地址应当合法");
 
     {
         let mut pairs = url.query_pairs_mut();
-        pairs.append_pair("key", api_key);
+        if let Some(key) = api_key.filter(|key| !key.is_empty()) {
+            pairs.append_pair("key", key);
+        }
         pairs.append_pair("steamid", steam_id);
         if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
             pairs.append_pair("cursor", cursor);
@@ -85,13 +92,17 @@ mod tests {
     /// 否则含 `+` / `&` / `=` 时 query 会被截断，第 2 页起拿不到数据。
     #[test]
     fn official_wishlist_url_encodes_cursor() {
-        let url = official_wishlist_url("KEY", "76561198000000000", None);
+        let url = official_wishlist_url(None, "76561198000000000", None);
+        // 没有 Key 时不应出现 key 参数：该接口允许匿名调用
         assert_eq!(
             url,
-            "https://api.steampowered.com/IWishlistService/GetWishlist/v1/?key=KEY&steamid=76561198000000000"
+            "https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid=76561198000000000"
         );
 
-        let url = official_wishlist_url("KEY", "76561198000000000", Some("a+b&c=d"));
+        let url = official_wishlist_url(Some("KEY"), "76561198000000000", None);
+        assert!(url.contains("key=KEY"), "{url}");
+
+        let url = official_wishlist_url(None, "76561198000000000", Some("a+b&c=d"));
         assert!(
             url.contains("cursor=a%2Bb%26c%3Dd"),
             "cursor 必须被编码：{url}"

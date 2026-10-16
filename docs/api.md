@@ -73,6 +73,10 @@ The response is a page object: `{ items, total, page, per_page, total_pages }`.
 ```
 
 - `steam_id` accepts a 17-digit steamID64, a vanity name, or a profile URL.
+- No API key and no cookie are needed. The importer tries the public wishlist JSON first
+  (richer data) and falls back to the official `IWishlistService` endpoint when Steam refuses
+  anonymous access; `summary.source_mode` reports which path was used (`public_json`,
+  `official_api` or `fixture`).
 - `dry_run: true` reports what *would* happen (same numbers as a real run) without writing
   anything; the response then has `"run": null`.
 - `include_non_games` adds bundles / software / demos; those are skipped by default.

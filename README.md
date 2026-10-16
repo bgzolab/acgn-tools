@@ -16,8 +16,8 @@ with store metadata, and keep track of what you actually play.
 
 ## Features
 
-- **Steam wishlist import in one click** — steamID64, vanity URL or profile link; uses public
-  endpoints, **no API key required**
+- **Steam wishlist import in one click** — steamID64, vanity URL or profile link; no API key
+  and no cookie required
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
   discount and release date, fetched on demand
 - **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
@@ -73,8 +73,9 @@ for a template.
 | `ACGN_CORS_ORIGINS` | localhost:5173 only | Comma-separated CORS allowlist (same-origin deployments need none) |
 | `ACGN_LOG` | `info,…` | `tracing` filter directives |
 | `ACGN_STEAM_FIXTURE` | unset | Point at `fixtures/steam` to run fully offline |
-| `STEAM_API_KEY` | unset | Optional; used as a fallback when the public wishlist endpoint is refused |
+| `STEAM_API_KEY` | unset | Optional; only sent when configured (the official wishlist API works anonymously) |
 | `STEAM_COUNTRY` / `STEAM_LANGUAGE` | `cn` / `schinese` | Store country and language (prices, titles, descriptions) |
+| `STEAM_ENRICH_CONCURRENCY` / `STEAM_ENRICH_DELAY_MS` | `1` / `1500` | Metadata enrichment rate (≈0.67 req/s by default, matching Steam's `appdetails` budget) |
 
 > Steam store and API endpoints are unreachable from mainland China without a proxy. If
 > requests time out, check your proxy's routing rules first — a `Steam → DIRECT` rule is the

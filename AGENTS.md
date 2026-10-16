@@ -162,8 +162,9 @@ case as a test first.
 | `ACGN_WEB_DIR` | Frontend build output served by the API (default `./web/dist`) |
 | `ACGN_CORS_ORIGINS` | Comma-separated CORS allowlist |
 | `ACGN_STEAM_FIXTURE` | Point at `fixtures/steam` to run fully offline |
-| `STEAM_API_KEY` | Optional; used as a fallback when the public wishlist endpoint is refused |
+| `STEAM_API_KEY` | Optional; only sent to the official API when configured (that endpoint works anonymously) |
 | `STEAM_COUNTRY` / `STEAM_LANGUAGE` | Store country/language for prices and names |
+| `STEAM_ENRICH_CONCURRENCY` / `STEAM_ENRICH_DELAY_MS` | Enrichment rate (default 1 / 1500ms ≈ 0.67 req/s, the `appdetails` budget) |
 
 Operational notes:
 

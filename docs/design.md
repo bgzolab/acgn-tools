@@ -132,14 +132,22 @@ Three paths, chosen automatically:
 | Path | Requires | Gives |
 |---|---|---|
 | Public `wishlistdata?p=N` JSON | public profile | name, cover, review, release date, added date, wishlist rank |
-| Official `IWishlistService/GetWishlist/v1` | `STEAM_API_KEY` | appids only (titles need enrichment); supports `cursor` paging |
+| Official `IWishlistService/GetWishlist/v1` | nothing (a key is optional and only sent when configured) | appid, priority, date_added; supports `cursor` paging |
 | Offline fixture (`ACGN_STEAM_FIXTURE`) | nothing | a frozen copy of the public data, used for demos and tests |
 
-- The public path is preferred because it needs no key and returns richer data; the official
-  API is a fallback when the profile is not public.
-- `appdetails` (store details) is rate limited: enrichment runs with concurrency 2, a 400 ms
-  gap, and stops gracefully on HTTP 429 — already-fetched items stay committed and the rest are
-  retried later. A rate limit is surfaced as "try again later" (422), never as "app not found".
+- The public path is tried first because it returns richer data (names, covers, review scores).
+  Steam has tightened anonymous access to it (as of 2026-10 it answers `302` to the store home
+  for everyone), so **the official path is the one that usually delivers** — and it needs neither
+  a key nor a cookie.
+- Because the official path only returns appids, the resulting entries show placeholder titles
+  until "enrich" fills in names, covers, prices and descriptions from `appdetails`.
+- `appdetails` (store details) is rate limited to roughly **200 requests per 5 minutes**, so
+  enrichment defaults to concurrency 1 with a 1500 ms gap (≈0.67 req/s) and stops gracefully on
+  HTTP 429 — already-fetched items stay committed and the rest are retried later. A rate limit
+  is surfaced as "try again later" (422), never as "app not found".
+- Store details are region-sensitive: titles that are not sold in the configured country return
+  `success:false` for `cc=cn`, so the client retries once with `cc=us`. Those entries then carry
+  USD prices, which is the honest answer ("not sold in your region").
 - `reqwest` errors are redacted with `without_url()` before they reach logs, `import_runs` or
   API responses: the official URL carries `?key=…`.
 - From mainland China, both `store.steampowered.com` and `api.steampowered.com` need a proxy.

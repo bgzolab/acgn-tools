@@ -172,7 +172,8 @@ onMounted(() => {
       <div>
         <h2>① 导入 Steam 愿望单</h2>
         <div class="desc">
-          走公开接口，不需要 API Key；前提是 Steam「个人资料」「游戏详情」「愿望单」都是公开的
+          不需要 API Key、也不需要 cookie：先试公开接口，Steam 收紧匿名访问时自动回退到官方接口。
+          导入只拿到条目 ID，名称 / 封面 / 价格点「② 补全元数据」拉取。前提：愿望单是公开的
         </div>
       </div>
       <span class="badge">source_mode: {{ result?.summary.source_mode ?? "—" }}</span>
