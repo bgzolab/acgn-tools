@@ -76,13 +76,17 @@ async function load(id: number) {
  */
 async function patch(patchBody: EntryPatch): Promise<GameWithEntry | null> {
   if (!item.value) return null;
+  // 记下这条 PATCH 的目标：写入期间抽屉可能被切走，迟到响应不能覆盖当前内容
+  const targetId = item.value.game.id;
   saving.value = true;
   try {
-    const updated = await patchGame(item.value.game.id, patchBody);
+    const updated = await patchGame(targetId, patchBody);
+    if (props.gameId !== targetId) return null;
     item.value = updated;
     emit("updated", updated);
     return updated;
   } catch (error) {
+    if (props.gameId !== targetId) return null;
     const { title: toastTitle, message } = errorText(error);
     pushToast("err", toastTitle, message);
     return null;
@@ -139,13 +143,17 @@ async function saveNoteAndPlaytime() {
 
 async function doRefresh() {
   if (!game.value) return;
+  const targetId = game.value.id;
   refreshing.value = true;
   try {
-    const result = await refreshMetadata(game.value.id);
+    const result = await refreshMetadata(targetId);
+    // 同样的慢响应守卫：切走了就不要把结果盖回去
+    if (props.gameId !== targetId) return;
     item.value = { game: result.game, entry: result.entry };
     emit("updated", item.value);
     pushToast("ok", "元数据已更新", `来源结果：${result.outcome}`);
   } catch (error) {
+    if (props.gameId !== targetId) return;
     const { title: toastTitle, message } = errorText(error);
     pushToast("err", toastTitle, message);
   } finally {

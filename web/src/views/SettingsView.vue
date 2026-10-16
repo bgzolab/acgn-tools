@@ -91,7 +91,8 @@ onMounted(async () => {
         <a class="btn ghost" href="/api" target="_blank" rel="noreferrer">查看 API 列表 ↗</a>
       </div>
       <p class="hint" style="margin-top: 10px">
-        导出的 JSON 可以直接通过「导入与同步 → 离线 / 手工导入」再灌回来，用于备份迁移。
+        导出的 JSON（含状态 / 评分 / 备注）可以在「导入与同步 → 离线 / 手工导入」里原样粘贴回来做
+        <strong>备份还原</strong>：还原以文件为准，覆盖同一条目的元数据与个人状态（文件里没有的条目不动）。
       </p>
 
       <div class="divider" />

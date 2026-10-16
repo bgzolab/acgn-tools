@@ -63,11 +63,24 @@ export interface JsonImportBody {
   items: unknown[];
   source?: string;
   mode?: string;
+  /** 是否返回受影响的条目（与「是否写入」无关） */
   preview?: boolean;
+  /** 只预览不落库用 `options.dry_run`（扁平导入）/ `dry_run`（还原） */
+  options?: { dry_run?: boolean; include_dlc?: boolean; include_non_games?: boolean };
 }
 
 export const importJson = (body: JsonImportBody) =>
   http.post<ImportResponse>("/imports", body);
+
+/** 备份还原：把 `GET /api/export/json` 的产物原样灌回来（文件优先） */
+export interface RestoreBody {
+  items: unknown[];
+  dry_run?: boolean;
+  preview?: boolean;
+}
+
+export const restoreJson = (body: RestoreBody) =>
+  http.post<ImportResponse>("/imports/restore", body);
 
 export const listRuns = (limit = 20) => http.get<ImportRun[]>(`/imports?limit=${limit}`);
 

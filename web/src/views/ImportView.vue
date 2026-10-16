@@ -2,7 +2,7 @@
 /** 导入与同步：Steam 愿望单、离线 JSON、元数据补全、历史记录。 */
 import { onMounted, ref } from "vue";
 
-import { enrich, importJson, importSteamWishlist, listRuns } from "../api";
+import { enrich, importJson, importSteamWishlist, listRuns, restoreJson } from "../api";
 import type { EnrichSummary, ImportResponse, ImportRun } from "../api/types";
 import GameCard from "../components/GameCard.vue";
 import { formatDateTime, relativeTime } from "../composables/format";
@@ -55,6 +55,16 @@ async function runSteam(dryRun: boolean) {
 // ---------------------------------------------------------------- 离线 JSON
 const jsonDraft = ref("");
 const jsonRunning = ref(false);
+/** 仅预览：走 dry_run，不落库、不写运行记录 */
+const jsonDryRun = ref(false);
+
+/** 导出文件的元素是 `{game, entry}`；扁平条目（SourceItem）才是合并导入。 */
+function looksLikeRestore(items: unknown[]): boolean {
+  const first = items[0];
+  return (
+    typeof first === "object" && first !== null && "game" in (first as Record<string, unknown>)
+  );
+}
 
 const JSON_SAMPLE = `{
   "items": [
@@ -93,17 +103,32 @@ async function runJsonImport() {
     return;
   }
 
+  // 自动识别：`{game, entry}` 是导出文件的还原结构，扁平的 SourceItem 走合并导入
+  const restore = looksLikeRestore(items);
+
   jsonRunning.value = true;
   try {
-    const response = await importJson({ items, preview: true });
-    result.value = response;
+    const response = restore
+      ? await restoreJson({ items, dry_run: jsonDryRun.value, preview: !jsonDryRun.value })
+      : await importJson({
+          items,
+          preview: !jsonDryRun.value,
+          options: { dry_run: jsonDryRun.value },
+        });
+
+    if (!jsonDryRun.value) result.value = response;
+
+    const summary = response.summary;
+    const counts = `新增 ${summary.added} / 更新 ${summary.updated} / 未变 ${summary.unchanged} / 跳过 ${summary.skipped}`;
     pushToast(
-      "ok",
-      "JSON 导入完成",
-      `新增 ${response.summary.added} / 更新 ${response.summary.updated} / 未变 ${response.summary.unchanged}`,
+      jsonDryRun.value ? "warn" : "ok",
+      `${restore ? "还原" : "导入"}${jsonDryRun.value ? "预览完成（未写入）" : "完成"}`,
+      counts,
     );
-    jsonDraft.value = "";
-    await loadHistory();
+    if (!jsonDryRun.value) {
+      jsonDraft.value = "";
+      await loadHistory();
+    }
   } catch (error) {
     const { title, message } = errorText(error);
     pushToast("err", title, message);
@@ -288,7 +313,8 @@ onMounted(() => {
       <div>
         <h2>③ 离线 / 手工导入</h2>
         <div class="desc">
-          粘贴 JSON 数组（或 <code>{ "items": [...] }</code>）导入；字段名与导出文件一致，可作为离线兜底
+          粘贴 <strong>导出的整份 JSON</strong> 即做备份还原（含状态 / 评分 / 备注，文件优先）；
+          粘贴扁平条目（含 <code>external_id</code>）则走合并导入
         </div>
       </div>
       <button class="btn sm ghost" @click="jsonDraft = JSON_SAMPLE">填入示例</button>
@@ -297,12 +323,16 @@ onMounted(() => {
       v-model="jsonDraft"
       class="textarea"
       style="min-height: 132px"
-      placeholder='[ { "external_id": "xxx", "title": "示例条目", "status": "wishlist" } ]'
+      placeholder='粘贴导出文件，或 [ { "external_id": "xxx", "title": "示例条目", "status": "wishlist" } ]'
     />
     <div class="row" style="margin-top: 10px">
       <button class="btn" :disabled="jsonRunning" @click="runJsonImport">
-        {{ jsonRunning ? "导入中…" : "导入这段 JSON" }}
+        {{ jsonRunning ? "处理中…" : jsonDryRun ? "仅预览" : "导入 / 还原" }}
       </button>
+      <label class="switch">
+        <input v-model="jsonDryRun" type="checkbox" />
+        仅预览（不写入）
+      </label>
       <a class="btn ghost" :href="'/api/export/json'" target="_blank" rel="noreferrer">导出全量 JSON ↗</a>
     </div>
   </div>
