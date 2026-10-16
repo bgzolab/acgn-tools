@@ -1,0 +1,4 @@
+# 生成/样例数据：GitHub 上折叠显示，避免污染 diff
+fixtures/steam/*.json linguist-generated=true
+web/pnpm-lock.yaml linguist-generated=true
+Cargo.lock linguist-generated=true
