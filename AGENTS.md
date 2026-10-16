@@ -162,7 +162,12 @@ Operational notes:
   gracefully on HTTP 429, leaving already-fetched items committed.
 - The review CI needs the `OPENCODE_API_KEY` secret on the repository (or an organization secret
   granted to it). Without it the provider cannot be resolved and the run fails with
-  `Model not found: opencode-go/glm-5.3-flash`.
+  `Model not found: opencode-go/glm-5.3-flash`. Organization secrets are **not** inherited
+  automatically: add the repository under *Repository access* (or switch it to *All repositories*).
+- Private repositories additionally need credentials for the handler's
+  `git fetch origin --depth=20 <head>`; the review workflow already injects a read-only
+  `GITHUB_TOKEN` via a global `url.insteadOf` rewrite. Removing that step breaks private repos
+  with `fatal: could not read Username for 'https://github.com'`.
 - The review CI runs the scripts in `.github/scripts/`, so the PR's **head branch must contain them**
   (they are shipped by `main`; keep both in sync when upgrading the pipeline).
 

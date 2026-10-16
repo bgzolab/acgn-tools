@@ -75,7 +75,7 @@ onMounted(async () => {
       <div class="divider" />
       <h3>常用环境变量</h3>
       <ul class="warn-list">
-        <li><code>ACGN_BIND</code> 监听地址（默认 0.0.0.0:8787）</li>
+        <li><code>ACGN_BIND</code> 监听地址（默认 127.0.0.1:8787，要局域网访问改成 0.0.0.0:8787）</li>
         <li><code>ACGN_DB</code> SQLite 路径（默认 ./data/acgn.db）</li>
         <li><code>ACGN_WEB_DIR</code> 前端构建产物目录（默认 ./web/dist）</li>
         <li><code>STEAM_API_KEY</code> 可选，公开接口不可用时回退官方接口</li>
