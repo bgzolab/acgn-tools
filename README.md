@@ -112,14 +112,22 @@ The quality gates are `cargo clippy --workspace --all-targets -- -D warnings`,
 
 ## Contributing
 
-1. Branch off `main` (`feat/…`, `fix/…`)
-2. Use an English `type(scope):subject` commit title (a Chinese body is fine), e.g.
-   `feat(steam):support vanity URLs`
-3. Make sure the quality gates pass, then open a pull request — it will be merged with **squash**
+Contributions of any kind are **greatly appreciated**. If you have a suggestion, fork the repo
+and open a pull request, or open an issue with the `enhancement` tag. And a star never hurts 🙂
 
-Contributions of any kind are welcome. If you have an idea, open an issue with the
-`enhancement` tag; forks and pull requests are equally appreciated.
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes — English `type(scope):subject` title (a Chinese body is fine), e.g.
+   `feat(steam):support vanity URLs`
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a pull request — it will be merged with **squash**
+
+Top contributors:
+
+<a href="https://github.com/bgzolab/acgn-tools/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=bgzolab/acgn-tools" alt="contrib.rocks image" />
+</a>
 
 ## License
 
-AGPL-3.0 — see [`LICENCE`](LICENCE).
+All code is licensed under the AGPL-3.0 license. See [`LICENCE`](LICENCE).
