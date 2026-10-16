@@ -387,6 +387,76 @@ async fn filtered_out_items_are_not_reported_as_missing() {
     assert_eq!(preview.missing, 0);
 }
 
+/// 读取 `metadata_json`（原始载荷）方便断言。
+async fn metadata_json_of(db: &Db, external_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT metadata_json FROM games WHERE external_id = ?")
+        .bind(external_id)
+        .fetch_one(&db.pool)
+        .await
+        .expect("查询 metadata_json 不应失败")
+}
+
+/// P1 回归：`metadata_json` 必须遵守 MetadataLevel 权威规则。
+///
+/// 否则「导入（列表档 / 愿望单载荷）→ 补全（详情档 / appdetails 载荷）→ 再导入」
+/// 会让两种载荷互相改写，每次同步都误报 `updated`，也违反「重复导入必须 no-op」。
+#[tokio::test]
+async fn list_level_payload_cannot_overwrite_full_level_payload() {
+    let db = setup().await;
+
+    let mut wishlist_item = item("810", "Xi");
+    wishlist_item.metadata_level = MetadataLevel::List;
+    wishlist_item.metadata = Some(serde_json::json!({ "kind": "wishlist", "priority": 3 }));
+
+    let first = import(&db, &[wishlist_item.clone()]).await;
+    assert_eq!(first.added, 1);
+    let raw = metadata_json_of(&db, "810").await;
+    assert!(
+        raw.as_deref().unwrap_or_default().contains("wishlist"),
+        "列表档应当能「填空」：{raw:?}"
+    );
+
+    // 详情档覆盖（appdetails 载荷）
+    let mut detailed = item("810", "Xi");
+    detailed.metadata_level = MetadataLevel::Full;
+    detailed.metadata = Some(serde_json::json!({ "kind": "appdetails", "price_final": 1234 }));
+    assert!(matches!(
+        db.update_metadata(&detailed).await.unwrap(),
+        MetadataOutcome::Updated(_)
+    ));
+
+    // 再导入完全相同的列表档：必须 no-op，且不能把载荷改回愿望单版本
+    let second = import(&db, &[wishlist_item]).await;
+    assert_eq!(second.updated, 0, "列表档不得覆盖详情档的原始载荷");
+    assert_eq!(second.unchanged, 1);
+    let raw = metadata_json_of(&db, "810").await;
+    assert!(
+        raw.as_deref().unwrap_or_default().contains("appdetails"),
+        "载荷应保持详情档版本：{raw:?}"
+    );
+
+    // P2-4 回归：Unchanged 时连时间戳都不该动（否则前端「元数据抓取于…」会一直漂移）
+    let before = db
+        .get_game_by_external(Source::Steam, "810")
+        .await
+        .unwrap()
+        .unwrap()
+        .game
+        .metadata_updated_at;
+    assert!(matches!(
+        db.update_metadata(&detailed).await.unwrap(),
+        MetadataOutcome::Unchanged(_)
+    ));
+    let after = db
+        .get_game_by_external(Source::Steam, "810")
+        .await
+        .unwrap()
+        .unwrap()
+        .game
+        .metadata_updated_at;
+    assert_eq!(after, before, "未变化时不应刷新元数据时间戳");
+}
+
 #[tokio::test]
 async fn metadata_json_is_persisted_and_stable() {
     let db = setup().await;
@@ -396,12 +466,7 @@ async fn metadata_json_is_persisted_and_stable() {
 
     import(&db, &[with_payload.clone()]).await;
 
-    let raw: Option<String> =
-        sqlx::query_scalar("SELECT metadata_json FROM games WHERE external_id = ?")
-            .bind("800")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
+    let raw = metadata_json_of(&db, "800").await;
     let raw = raw.expect("metadata_json 必须落库（契约见 dto.rs / appdetails.rs 注释）");
     assert!(raw.contains("\"appid\""), "应保留来源原始载荷：{raw}");
 

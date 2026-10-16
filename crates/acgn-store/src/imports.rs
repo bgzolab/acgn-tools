@@ -304,6 +304,7 @@ impl Db {
                 }
             }
             summary.missing = previous.len() as i64;
+            push_missing_warning(&mut summary, &previous);
             return Ok(summary);
         }
 
@@ -330,15 +331,7 @@ impl Db {
         }
         tx.commit().await.db()?;
 
-        summary.missing = previous.len() as i64;
-        if summary.missing > 0 {
-            let preview: Vec<String> = previous.values().take(5).map(|id| id.to_string()).collect();
-            summary.warnings.push(format!(
-                "{} 个条目已不在来源中（可能已购买 / 被移出愿望单），本地保留未删除：#{}",
-                summary.missing,
-                preview.join(", #")
-            ));
-        }
+        push_missing_warning(&mut summary, &previous);
         summary.sample_ids.truncate(24);
         summary.sample_ids.sort_unstable();
         summary.sample_ids.dedup();
@@ -359,12 +352,18 @@ impl Db {
                 let mut game = row.into_domain()?.game;
                 let changed = merge_metadata(&mut game, item);
                 let had_metadata = game.metadata_updated_at.is_some();
-                game.metadata_updated_at = Some(now);
+                let any_change = changed || metadata_json_changed || !had_metadata;
 
-                update_game_in_tx(&mut tx, &game, now).await?;
-                if metadata_json_changed {
-                    write_metadata_json_in_tx(&mut tx, game.id, item, now).await?;
+                // 没有任何变化时不写 games：否则反复点「刷新元数据」会让
+                // updated_at / metadata_updated_at 一直漂移，看起来像内容变了。
+                if any_change {
+                    game.metadata_updated_at = Some(now);
+                    update_game_in_tx(&mut tx, &game, now).await?;
+                    if metadata_json_changed {
+                        write_metadata_json_in_tx(&mut tx, game.id, item, now).await?;
+                    }
                 }
+
                 sqlx::query("UPDATE library_entries SET last_synced_at = ? WHERE game_id = ?")
                     .bind(now)
                     .bind(game.id)
@@ -372,7 +371,7 @@ impl Db {
                     .await
                     .db()?;
 
-                if changed || metadata_json_changed || !had_metadata {
+                if any_change {
                     MetadataOutcome::Updated(game.id)
                 } else {
                     MetadataOutcome::Unchanged(game.id)
@@ -465,6 +464,20 @@ impl Db {
 }
 
 // -------------------------------------------------------------------- 内部实现
+
+/// 「来源里消失了」的告警：预览与真实导入共用同一段文案，避免两边说法不一致。
+fn push_missing_warning(summary: &mut ImportSummary, previous: &HashMap<String, i64>) {
+    summary.missing = previous.len() as i64;
+    if summary.missing == 0 {
+        return;
+    }
+    let preview: Vec<String> = previous.values().take(5).map(|id| id.to_string()).collect();
+    summary.warnings.push(format!(
+        "{} 个条目已不在来源中（可能已购买 / 被移出愿望单），本地保留未删除：#{}",
+        summary.missing,
+        preview.join(", #")
+    ));
+}
 
 fn accepted(item: &SourceItem, options: &ImportOptions) -> bool {
     match item.media_kind {
@@ -572,11 +585,20 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
     })
 }
 
-/// `metadata_json` 的比较：解析后按值比，文本顺序/空白差异不算变化。
+/// `metadata_json` 的比较。
+///
+/// 与封面 / 发售日同一条规则（AGENTS.md §4.2）：列表档（愿望单载荷）只允许填空，
+/// 详情档（appdetails 载荷）才能覆盖。否则「导入 → 补全 → 再导入」会让两种载荷
+/// 互相改写，每次同步都误报「有更新」。
 fn metadata_json_differs(row: &GameEntryRow, item: &SourceItem) -> bool {
     let Some(incoming) = &item.metadata else {
         return false;
     };
+
+    if !item.metadata_level.is_full() && row.metadata_json.is_some() {
+        return false;
+    }
+
     match row
         .metadata_json
         .as_deref()
