@@ -175,8 +175,9 @@ node scripts/gen-steam-fixture.mjs
 ## 贡献
 
 1. 从 `main` 切分支（`feat/xxx`、`fix/xxx`）
-2. 提交信息遵循 `type(scope):subject`（如 `feat(steam):支持个性域名`）
-3. 自测通过后提 PR，等待 CI 审查（opencode-review）
+2. 提交信息：**标题用英文**，遵循 `type(scope):subject`（如 `feat(steam):support vanity URLs`），正文可用中文
+3. 自测通过后提 PR（合并用 **squash**），等待 CI 审查（opencode-review）
+4. 给 AI agent 的工作约定见 [`AGENTS.md`](AGENTS.md)
 
 ## License
 
