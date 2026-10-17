@@ -31,7 +31,13 @@ pub fn api_router(state: AppState) -> Router<AppState> {
         .route("/export/json", get(misc::export_json))
         // 游戏
         .route("/games", get(games::list_games))
-        .route("/games/{id}", get(games::get_game).patch(games::patch_game))
+        .route(
+            "/games/{id}",
+            get(games::get_game)
+                .patch(games::patch_game)
+                .delete(games::delete_game),
+        )
+        .route("/games/delete", post(games::delete_games))
         .route(
             "/games/{id}/refresh-metadata",
             post(games::refresh_metadata),
@@ -64,6 +70,8 @@ async fn api_index() -> Json<serde_json::Value> {
             { "method": "GET",   "path": "/api/games",                     "desc": "列表：status/source/q/sort/page/per_page/favorite" },
             { "method": "GET",   "path": "/api/games/{id}",                "desc": "详情" },
             { "method": "PATCH", "path": "/api/games/{id}",                "desc": "改状态/评分/进度/备注/收藏" },
+            { "method": "DELETE","path": "/api/games/{id}",                "desc": "删除条目（本地动作；来源里还在的下次导入会重新加回）" },
+            { "method": "POST",  "path": "/api/games/delete",              "desc": "批量删除（多选清理，未知 id 忽略）" },
             { "method": "POST",  "path": "/api/games/{id}/refresh-metadata", "desc": "抓取该条目的商店详情" },
             { "method": "POST",  "path": "/api/imports/steam/wishlist",    "desc": "导入 Steam 愿望单" },
             { "method": "POST",  "path": "/api/imports",                   "desc": "通用 JSON 导入（扁平 SourceItem，合并语义）" },
@@ -131,7 +139,13 @@ fn cors_layer(config: &AppConfig) -> CorsLayer {
     tracing::info!(origins = ?config.cors_origins, "CORS 白名单");
     CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([header::CONTENT_TYPE])
 }
 
