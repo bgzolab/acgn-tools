@@ -235,6 +235,21 @@ pub struct EntryPatch {
     pub priority: Option<i64>,
 }
 
+/// 批量删除请求（`POST /api/games/delete`）。
+///
+/// 删除是**本地动作**：来源里仍然存在的条目，下次导入会当作新条目重新加回来。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeleteGamesRequest {
+    pub ids: Vec<i64>,
+}
+
+/// 批量删除结果。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeleteGamesResponse {
+    /// 实际删除的行数（未知 id 静默忽略）
+    pub deleted: i64,
+}
+
 /// 统计信息（看板页）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
