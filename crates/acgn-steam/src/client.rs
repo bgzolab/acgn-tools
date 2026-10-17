@@ -6,7 +6,7 @@
 //! 2. 公开愿望单接口（无需 Key，信息最全）；
 //! 3. 公开接口被拒且配置了 `STEAM_API_KEY` → 官方接口（只有 appid，名称等需再补全）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use acgn_core::{Error, Result, SourceItem};
@@ -15,6 +15,7 @@ use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use tracing::{debug, warn};
 
 use crate::appdetails::parse_app_details;
+use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
 use crate::util::extract_xml_tag;
@@ -505,6 +506,79 @@ impl SteamClient {
         Ok(parse_app_details(&entry).map(|data| data.to_source_item(appid)))
     }
 
+    /// 用新资产接口补竖版海报：`library_capsule`（600x900）覆盖 `poster_url`。
+    ///
+    /// 旧式 `.../library_600x900.jpg` 对成人 / 区域受限内容已经 404，而 `appdetails`
+    /// 只有横版 header。海报属于锦上添花：失败了只记日志，不能影响元数据主流程。
+    async fn fill_poster_assets(&self, items: &mut [SourceItem]) {
+        if items.is_empty() {
+            return;
+        }
+        let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
+        match self.store_library_capsules(&appids).await {
+            Ok(capsules) => {
+                for item in items.iter_mut() {
+                    if let Some(url) = capsules.get(&item.external_id) {
+                        item.poster_url = Some(url.clone());
+                    }
+                }
+            }
+            Err(err) => warn!(error = %err, "竖版海报补全失败（不影响其余元数据）"),
+        }
+    }
+
+    /// 取一批 appid 的竖版海报 URL。先配置国家；整批拿不到的再切 `us` 重试——
+    /// 国区上下文会把成人内容的 assets 整个隐藏，而不是逐条报错。
+    async fn store_library_capsules(&self, appids: &[String]) -> Result<HashMap<String, String>> {
+        let mut capsules = HashMap::new();
+        for chunk in appids.chunks(STORE_ITEMS_CHUNK) {
+            let primary = self
+                .store_items_for_country(chunk, &self.config.country)
+                .await?;
+            let missing: Vec<String> = chunk
+                .iter()
+                .filter(|appid| !primary.contains_key(*appid))
+                .cloned()
+                .collect();
+            capsules.extend(primary);
+
+            if missing.is_empty() || self.config.country == FALLBACK_COUNTRY {
+                continue;
+            }
+            capsules.extend(
+                self.store_items_for_country(&missing, FALLBACK_COUNTRY)
+                    .await?,
+            );
+        }
+        Ok(capsules)
+    }
+
+    async fn store_items_for_country(
+        &self,
+        appids: &[String],
+        country: &str,
+    ) -> Result<HashMap<String, String>> {
+        let url = store_items_url(appids, country, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::upstream(format!(
+                "IStoreBrowseService 返回 HTTP {status}"
+            )));
+        }
+
+        let value: serde_json::Value = response.json().await.net()?;
+        Ok(parse_library_capsules(&value))
+    }
+
     /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
     pub async fn app_details_batch(&self, appids: &[String]) -> Result<AppDetailsBatch> {
         if let Some(fixture) = &self.fixture {
@@ -574,6 +648,10 @@ impl SteamClient {
                 tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
             }
         }
+
+        // 竖版海报在新资产接口里（appdetails 只有横版 header）；
+        // 旧式 library_600x900 路径对成人 / 区域受限内容已经 404
+        self.fill_poster_assets(&mut items).await;
 
         Ok(AppDetailsBatch {
             items,

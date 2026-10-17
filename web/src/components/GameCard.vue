@@ -25,7 +25,11 @@ const priceText = computed(() => {
 <template>
   <article class="game-card" @click="emit('open', game.id)">
     <div class="poster">
-      <PosterImage :src="game.poster_url || game.cover_url" :alt="title" />
+      <PosterImage
+        :src="game.poster_url"
+        :fallback-src="game.cover_url"
+        :alt="title"
+      />
       <div class="corner left">
         <StatusBadge :status="entry.status" />
       </div>
