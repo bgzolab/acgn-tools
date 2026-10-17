@@ -22,7 +22,10 @@ with store metadata, and keep track of what you actually play.
   discount and release date, fetched on demand
 - **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
   dropped / ignored), rating, progress, playtime, notes and favorites
-- **Library view** — filter by status, search, nine sort orders, pagination
+- **Library view** — filter by status, search, nine sort orders, pagination; multi-select mode
+  for batch deleting entries you no longer care about
+- **Delete & cleanup** — remove entries one by one from the detail drawer or in bulk from the
+  library; deletion is local, so re-importing the same source brings its items back
 - **Dashboard** — status breakdown, wishlist value per currency, recently added, currently
   playing and recent sync history
 - **Import history** — every run records added / updated / skipped / missing counts, duration

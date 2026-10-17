@@ -48,6 +48,13 @@ export const refreshMetadata = (id: number) =>
     `/games/${id}/refresh-metadata`,
   );
 
+/** 删除单条（本地动作；来源里还在的下次导入会重新加回来） */
+export const deleteGame = (id: number) => http.delete<void>(`/games/${id}`);
+
+/** 批量删除（多选清理），返回实际删除行数（未知 id 忽略） */
+export const deleteGames = (ids: number[]) =>
+  http.post<{ deleted: number }>("/games/delete", { ids });
+
 // ------------------------------------------------------------------ 导入 / 同步
 
 export interface SteamImportBody {

@@ -133,6 +133,9 @@ call `Db::import_items`. Do not add source-specific branches to the merge logic 
   (`400` invalid, `404` not found, `422` source rejected, `502` upstream/network, `500` storage).
 - `PATCH /api/games/{id}`: missing field = unchanged; negative number = clear
   (`rating`/`progress_percent`/`playtime_minutes`); empty `note` = clear.
+- Deletion is local-only: `DELETE /api/games/{id}` (404 if unknown, 204 on success) and
+  `POST /api/games/delete` (batch, `{"ids": […]}` → `{"deleted": n}`). It never writes
+  `import_runs`, and the next import re-creates items that are still in the source.
 - Status keys are exactly: `wishlist`, `backlog`, `playing`, `completed`, `on_hold`, `dropped`, `ignored`.
 - The server binds to `127.0.0.1` by default and only allows the origins listed in
   `ACGN_CORS_ORIGINS`. Do not loosen either one without an explicit security rationale.

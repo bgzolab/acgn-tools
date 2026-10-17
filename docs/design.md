@@ -133,6 +133,12 @@ the merge, or restored ratings/notes will be silently dropped.
 - Touching `games.updated_at` / `metadata_updated_at` when a refresh finds no changes (the
   frontend shows "metadata fetched … ago", so silent writes look like content changes).
 
+The only way rows leave the database is an explicit user delete (`DELETE /api/games/{id}` /
+`POST /api/games/delete`, see [`api.md`](api.md)). That is a local, one-sided action: it cascades
+to `library_entries` and is not recorded in `import_runs`. An item that still exists in the source
+is re-created by the next import (as `added`) — that is intentional. To keep something out of the
+way without losing it, use the `ignored` status instead of deleting.
+
 ## 5. Data sources (Steam today)
 
 Three paths, chosen automatically:
