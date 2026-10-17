@@ -45,6 +45,8 @@ Metadata follows the source; personal state follows the local database — see
 | GET | `/api/games` | List games: `status` `source` `media_kind` `q` `sort` `favorite` `page` `per_page` |
 | GET | `/api/games/{id}` | One entry: `{ "game": …, "entry": … }` |
 | PATCH | `/api/games/{id}` | Update personal state (status, rating, progress, playtime, note, favorite, priority) |
+| DELETE | `/api/games/{id}` | Delete one entry (local-only; a re-import re-creates source items) |
+| POST | `/api/games/delete` | Batch delete `{"ids": […]}` → `{"deleted": n}` (multi-select cleanup) |
 | POST | `/api/games/{id}/refresh-metadata` | Re-fetch store details for a single entry |
 | POST | `/api/imports/steam/wishlist` | Import a Steam wishlist |
 | POST | `/api/imports` | Generic JSON import (flat `SourceItem`s, merge semantics) |
@@ -62,6 +64,29 @@ The response is a page object: `{ items, total, page, per_page, total_pages }`.
 
 `q` matches title, Chinese title, developers, publishers and tags. Wildcards in user input
 (`%`, `_`) are treated as literals.
+
+### DELETE /api/games/{id}
+
+Deletes one entry. This is a **local action**, deliberately separate from sync
+([`design.md`](design.md) §4):
+
+- the `games` row is removed and `library_entries` cascades, so personal state (rating, note,
+  playtime, favorite, …) is lost with it;
+- no `import_runs` row is written — a deletion is not an import;
+- if the source still lists the item, the next import re-creates it as `added` with a new local
+  id. "Deleted" is not "ignored": use the `ignored` status to keep it out of your way instead;
+- unknown id → `404`; success → `204 No Content`.
+
+### POST /api/games/delete
+
+Batch variant used by the library's multi-select mode:
+
+```json
+{ "ids": [12, 13, 14] }
+```
+
+The batch runs in one transaction, unknown ids are ignored and the response reports what
+actually happened — `{ "deleted": 2 }`. Empty `ids` or more than 1000 ids → `400`.
 
 ### POST /api/imports/steam/wishlist
 
