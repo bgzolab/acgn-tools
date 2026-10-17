@@ -1,0 +1,33 @@
+[package]
+name = "acgn-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ACGN 管理器后端：REST API + 静态站点托管"
+
+[lib]
+name = "acgn_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "acgn-server"
+path = "src/main.rs"
+
+[dependencies]
+acgn-core.workspace = true
+acgn-steam.workspace = true
+acgn-store.workspace = true
+
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -1,0 +1,124 @@
+### ACGN Tools API 速查（VS Code 装 REST Client 插件后可直接点 ▶ 运行）
+### 变量：@host 改成你的后端地址
+@host = http://127.0.0.1:8787
+@steamId = 76561198000000000
+
+### 接口索引
+GET {{host}}/api
+
+### 健康检查
+GET {{host}}/api/health
+
+### 前端配置（状态枚举 / 数据源模式）
+GET {{host}}/api/config
+
+### 看板统计
+GET {{host}}/api/stats
+
+### 游戏列表（默认按加入时间倒序）
+GET {{host}}/api/games?per_page=10
+
+### 游戏列表：只看愿望单 + 搜索 + 好评优先
+GET {{host}}/api/games?status=wishlist&q=ring&sort=review_desc&per_page=20
+
+### 游戏列表：只看收藏
+GET {{host}}/api/games?favorite=true
+
+### 游戏详情
+GET {{host}}/api/games/1
+
+### 修改状态 / 评分 / 进度 / 备注（缺省字段不改动；负数清空）
+PATCH {{host}}/api/games/1
+Content-Type: application/json
+
+{
+  "status": "playing",
+  "rating": 9,
+  "progress_percent": 35,
+  "playtime_minutes": 420,
+  "note": "第三章卡住了",
+  "favorite": true
+}
+
+### 清空评分与进度
+PATCH {{host}}/api/games/1
+Content-Type: application/json
+
+{
+  "rating": -1,
+  "progress_percent": -1,
+  "note": ""
+}
+
+### 刷新单个条目的商店元数据
+POST {{host}}/api/games/1/refresh-metadata
+
+### 导入 Steam 愿望单（dry_run=true 只预览不写入）
+POST {{host}}/api/imports/steam/wishlist
+Content-Type: application/json
+
+{
+  "steam_id": "{{steamId}}",
+  "preview": true,
+  "options": {
+    "include_dlc": true,
+    "include_non_games": false,
+    "dry_run": false
+  }
+}
+
+### 离线 JSON 导入（扁平条目，合并语义）
+### preview 与 dry_run 是两件事：preview = 返回预览条目；options.dry_run = 不落库
+POST {{host}}/api/imports
+Content-Type: application/json
+
+{
+  "source": "manual",
+  "preview": true,
+  "options": { "dry_run": false },
+  "items": [
+    {
+      "external_id": "note-001",
+      "title": "还没上 Steam 的想玩游戏",
+      "status": "wishlist",
+      "tags": ["独立", "解谜"]
+    }
+  ]
+}
+
+### 备份还原：把 GET /api/export/json 的产物原样灌回来（文件优先）
+POST {{host}}/api/imports/restore
+Content-Type: application/json
+
+{
+  "items": [
+    {
+      "game": { "source": "steam", "external_id": "1245620", "title": "ELDEN RING" },
+      "entry": { "status": "playing", "rating": 9, "note": "备份还原会保留这些" }
+    }
+  ]
+}
+
+### 还原预览（不落库、不写运行记录）
+POST {{host}}/api/imports/restore
+Content-Type: application/json
+
+{
+  "items": [],
+  "dry_run": true
+}
+
+### 批量补全元数据（Steam appdetails，有限流）
+POST {{host}}/api/enrich
+Content-Type: application/json
+
+{ "limit": 10 }
+
+### 导入历史
+GET {{host}}/api/imports?limit=20
+
+### 单次运行详情
+GET {{host}}/api/imports/1
+
+### 全量导出
+GET {{host}}/api/export/json

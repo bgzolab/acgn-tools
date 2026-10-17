@@ -1,0 +1,19 @@
+[package]
+name = "acgn-steam"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Steam 数据源适配：愿望单抓取、商店详情补全、离线 fixture 回放"
+
+[dependencies]
+acgn-core.workspace = true
+chrono.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

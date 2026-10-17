@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/acgn-core",
+    "crates/acgn-store",
+    "crates/acgn-steam",
+    "crates/acgn-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+authors = ["bgzo"]
+repository = "https://github.com/bgzolab/acgn-tools"
+description = "Self-hosted ACGN (anime / comic / game / novel) collection manager, game-first."
+
+[workspace.dependencies]
+acgn-core = { path = "crates/acgn-core" }
+acgn-store = { path = "crates/acgn-store" }
+acgn-steam = { path = "crates/acgn-steam" }
+
+anyhow = "1"
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "gzip",
+    "rustls-tls",
+    "charset",
+    "http2",
+    "socks",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+    "chrono",
+    "json",
+] }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+lto = "thin"
+strip = true

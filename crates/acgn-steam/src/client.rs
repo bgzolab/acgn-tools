@@ -1,0 +1,654 @@
+//! Steam HTTP 客户端：ID 解析、愿望单抓取、商店详情补全。
+//!
+//! 取数优先级：
+//!
+//! 1. 配置了 `ACGN_STEAM_FIXTURE` → 完全离线，读本地 JSON；
+//! 2. 公开愿望单接口（无需 Key，信息最全）；
+//! 3. 公开接口被拒且配置了 `STEAM_API_KEY` → 官方接口（只有 appid，名称等需再补全）。
+
+use std::collections::BTreeSet;
+use std::time::Duration;
+
+use acgn_core::{Error, Result, SourceItem};
+use futures::future::join_all;
+use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
+use tracing::{debug, warn};
+
+use crate::appdetails::parse_app_details;
+use crate::config::SteamConfig;
+use crate::fixture::FixtureData;
+use crate::util::extract_xml_tag;
+use crate::wishlist::{WishlistPayload, wishlist_to_source_item};
+use crate::{app_details_url, official_wishlist_url, public_wishlist_url, vanity_resolve_url};
+
+/// 愿望单最多翻多少页（每页约 100 条，足够 6000 个愿望）。
+const MAX_WISHLIST_PAGES: u32 = 60;
+
+/// 官方接口最多翻多少页（分页语义若变化，靠告警暴露而不是静默截断）。
+const MAX_OFFICIAL_PAGES: u32 = 60;
+
+/// 商店详情接口的兜底国家：国区不售的条目只有换区才能拿到数据。
+const FALLBACK_COUNTRY: &str = "us";
+
+/// reqwest 错误 → 领域错误。
+///
+/// **必须脱敏**：reqwest 的 `Display` 会带上完整请求 URL（含 query），而官方愿望单接口的
+/// API Key 就在 query 里（`?key=...`）。一旦原样透传，密钥会经 warnings → `import_runs`、
+/// `ApiError` → HTTP 响应、tracing → 日志三处泄漏，且永久留在数据库的同步历史里。
+/// `without_url()` 只去掉 URL 字段，`is_timeout()` / `is_decode()` 等分类信息都保留。
+pub(crate) trait ReqwestExt<T> {
+    fn net(self) -> Result<T>;
+}
+
+impl<T> ReqwestExt<T> for std::result::Result<T, reqwest::Error> {
+    fn net(self) -> Result<T> {
+        self.map_err(|err| {
+            let err = err.without_url();
+            if err.is_timeout() {
+                Error::network(format!("请求超时: {err}"))
+            } else if err.is_decode() {
+                Error::upstream(format!("响应解析失败: {err}"))
+            } else {
+                Error::network(err)
+            }
+        })
+    }
+}
+
+/// 用户输入的 Steam ID 形态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdInput {
+    /// 17 位 steamID64
+    Numeric(String),
+    /// 个性域名（vanity URL）
+    Vanity(String),
+}
+
+/// 解析用户输入的 SteamID / 主页链接 / 个性域名。
+pub fn parse_id_input(input: &str) -> Result<IdInput> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(Error::invalid("SteamID 不能为空"));
+    }
+
+    let lowered = trimmed.to_ascii_lowercase();
+    if let Some(rest) = lowered.split("steamcommunity.com/profiles/").nth(1) {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.len() == 17 {
+            return Ok(IdInput::Numeric(digits));
+        }
+        return Err(Error::invalid(format!(
+            "链接里的 steamID64 不合法: {trimmed}"
+        )));
+    }
+    if let Some(rest) = trimmed.split("steamcommunity.com/id/").nth(1) {
+        let vanity = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
+        if !vanity.is_empty() {
+            return Ok(IdInput::Vanity(vanity.to_string()));
+        }
+        return Err(Error::invalid(format!("链接里没有个性域名: {trimmed}")));
+    }
+
+    if trimmed.len() == 17 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(IdInput::Numeric(trimmed.to_string()));
+    }
+
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        && (2..=64).contains(&trimmed.len())
+    {
+        return Ok(IdInput::Vanity(trimmed.to_string()));
+    }
+
+    Err(Error::invalid(format!(
+        "无法识别 SteamID：{trimmed}（支持 17 位 steamID64、个性域名或个人主页链接）"
+    )))
+}
+
+/// 批量补全的结果。
+///
+/// 把「取不到的条目」和「为什么取不到」分开：
+/// `warnings` 给用户看，`last_error` 给调用方区分「已下架(成功但无数据)」和
+/// 「被限流/拒绝(应该提示稍后重试)」——否则 429 会被误报成「可能已下架」。
+#[derive(Debug)]
+pub struct AppDetailsBatch {
+    pub items: Vec<SourceItem>,
+    pub warnings: Vec<String>,
+    pub last_error: Option<Error>,
+}
+
+/// 一次愿望单抓取的结果。
+#[derive(Debug, Clone)]
+pub struct WishlistFetch {
+    /// 解析后的 steamID64
+    pub steam_id: String,
+    pub items: Vec<SourceItem>,
+    pub warnings: Vec<String>,
+    /// `public_json` / `official_api` / `fixture`
+    pub source_mode: &'static str,
+    /// `numeric` / `vanity` / `fixture`
+    pub resolved_via: &'static str,
+}
+
+/// Steam 客户端。
+pub struct SteamClient {
+    http: reqwest::Client,
+    config: SteamConfig,
+    fixture: Option<FixtureData>,
+}
+
+impl SteamClient {
+    pub fn new(config: SteamConfig) -> Result<Self> {
+        let fixture = config.load_fixture()?;
+        let http = reqwest::Client::builder()
+            .user_agent(config.user_agent.clone())
+            .timeout(config.timeout)
+            .gzip(true)
+            .build()
+            .map_err(Error::network)?;
+
+        Ok(Self {
+            http,
+            config,
+            fixture,
+        })
+    }
+
+    pub fn config(&self) -> &SteamConfig {
+        &self.config
+    }
+
+    pub fn mode(&self) -> &'static str {
+        self.config.mode()
+    }
+
+    pub fn fixture(&self) -> Option<&FixtureData> {
+        self.fixture.as_ref()
+    }
+
+    /// 解析 ID：数字直接用；个性域名走社区 XML（无需 Key）。
+    pub async fn resolve_id(&self, input: &str) -> Result<(String, &'static str, Vec<String>)> {
+        let mut warnings = Vec::new();
+        match parse_id_input(input)? {
+            IdInput::Numeric(id) => Ok((id, "numeric", warnings)),
+            IdInput::Vanity(vanity) => {
+                if let Some(fixture) = &self.fixture {
+                    return match &fixture.steam_id {
+                        Some(id) => {
+                            warnings.push(format!(
+                                "fixture 模式下使用内置 steam_id={id} 代替 vanity `{vanity}`"
+                            ));
+                            Ok((id.clone(), "fixture", warnings))
+                        }
+                        None => Err(Error::invalid(
+                            "fixture 模式下无法解析个性域名：请在 fixture 里写 steam_id，或直接填 17 位 steamID64",
+                        )),
+                    };
+                }
+
+                let url = vanity_resolve_url(&vanity);
+                let body = self
+                    .http
+                    .get(url)
+                    .header(ACCEPT, "application/xml, text/xml")
+                    .send()
+                    .await
+                    .net()?
+                    .text()
+                    .await
+                    .net()?;
+
+                let id = extract_xml_tag(&body, "steamID64").ok_or_else(|| {
+                    Error::rejected(format!(
+                        "无法解析个性域名 `{vanity}`：主页不存在或未公开（也可以直接填写 17 位 steamID64）"
+                    ))
+                })?;
+                Ok((id, "vanity", warnings))
+            }
+        }
+    }
+
+    /// 抓取愿望单：公开接口优先，失败且配了 Key 就回退官方接口。
+    pub async fn fetch_wishlist(&self, input: &str) -> Result<WishlistFetch> {
+        let (steam_id, resolved_via, mut warnings) = self.resolve_id(input).await?;
+
+        if let Some(fixture) = &self.fixture {
+            let items: Vec<SourceItem> = fixture
+                .wishlist_entries()
+                .into_iter()
+                .map(|(appid, item)| wishlist_to_source_item(&appid, &item))
+                .collect();
+            warnings.push(format!(
+                "离线 fixture 模式：{} 个条目来自 {}",
+                items.len(),
+                fixture.wishlist_path.display()
+            ));
+            return Ok(WishlistFetch {
+                steam_id,
+                items,
+                warnings,
+                source_mode: "fixture",
+                resolved_via: "fixture",
+            });
+        }
+
+        match self.fetch_public_wishlist(&steam_id).await {
+            Ok((items, mut extra)) => {
+                warnings.append(&mut extra);
+                Ok(WishlistFetch {
+                    steam_id,
+                    items,
+                    warnings,
+                    source_mode: "public_json",
+                    resolved_via,
+                })
+            }
+            Err(err) => {
+                // 公开接口（带名字/封面）Steam 已对匿名访问收紧；官方接口允许匿名调用，
+                // 所以无论有没有配置 Key 都要回退，否则用户会卡在一个无解的错误上。
+                warnings.push(format!(
+                    "公开愿望单接口不可用（{err}），已回退到官方 Web API{}",
+                    if self.config.has_api_key() {
+                        "（带 Key）"
+                    } else {
+                        "（匿名）"
+                    }
+                ));
+                let (items, mut extra) = self.fetch_official_wishlist(&steam_id).await?;
+                warnings.append(&mut extra);
+                warnings.push(
+                    "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取名称/价格/简介"
+                        .to_string(),
+                );
+                Ok(WishlistFetch {
+                    steam_id,
+                    items,
+                    warnings,
+                    source_mode: "official_api",
+                    resolved_via,
+                })
+            }
+        }
+    }
+
+    /// 公开接口：分页拉取 `wishlistdata`，按 appid 去重。
+    async fn fetch_public_wishlist(
+        &self,
+        steam_id: &str,
+    ) -> Result<(Vec<SourceItem>, Vec<String>)> {
+        let mut items = Vec::new();
+        let mut warnings = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+
+        for page in 0..MAX_WISHLIST_PAGES {
+            let url = public_wishlist_url(steam_id, page);
+            let response = self
+                .http
+                .get(url)
+                .header(ACCEPT, "application/json")
+                .header(ACCEPT_LANGUAGE, self.config.language.as_str())
+                .send()
+                .await
+                .net()?;
+
+            let status = response.status();
+
+            // reqwest 默认跟随重定向：Steam 收紧匿名访问后会把 wishlistdata 302 到商店首页，
+            // 拿到的是商店 HTML。这种情况必须报「接口不可用」，不能当成「愿望单为空」，
+            // 否则用户会去反复检查自己的隐私设置。
+            let final_path = response.url().path().to_string();
+            if !final_path.contains("/wishlist/") {
+                return Err(Error::rejected(format!(
+                    "公开愿望单接口已不再对匿名访问开放（被重定向到 {final_path}）"
+                )));
+            }
+            if status.as_u16() == 403 || status.as_u16() == 401 {
+                return Err(Error::rejected(
+                    "Steam 拒绝了愿望单请求：请把「个人资料」「游戏详情」「愿望单」都设为公开",
+                ));
+            }
+            if status.as_u16() == 404 {
+                if page > 0 {
+                    break;
+                }
+                return Err(Error::rejected(
+                    "Steam 返回 404：请确认 SteamID 是否正确，以及个人资料 / 愿望单是否公开",
+                ));
+            }
+            if !status.is_success() {
+                return Err(Error::rejected(format!("愿望单接口返回 HTTP {status}")));
+            }
+
+            let body = response.text().await.net()?;
+            let trimmed = body.trim();
+
+            if trimmed.is_empty() || trimmed.starts_with('<') {
+                if page == 0 {
+                    return Err(Error::rejected(
+                        "愿望单为空或不可见：请确认「愿望单」隐私设置为公开（也可以稍后重试）",
+                    ));
+                }
+                break;
+            }
+
+            let payload: WishlistPayload = serde_json::from_str(trimmed).map_err(|err| {
+                Error::upstream(format!(
+                    "愿望单 JSON 解析失败: {err}（前 80 字符: {}）",
+                    trimmed.chars().take(80).collect::<String>()
+                ))
+            })?;
+
+            if payload.is_empty() {
+                break;
+            }
+
+            let mut fresh = 0usize;
+            for (appid, item) in payload.into_entries() {
+                match appid {
+                    Some(appid) if seen.insert(appid.clone()) => {
+                        items.push(wishlist_to_source_item(&appid, &item));
+                        fresh += 1;
+                    }
+                    Some(_) => {}
+                    None => warnings.push("有 1 条愿望单数据缺少 appid，已跳过".to_string()),
+                }
+            }
+
+            debug!(page, fresh, total = items.len(), "愿望单分页");
+            if fresh == 0 {
+                break;
+            }
+        }
+
+        if items.is_empty() {
+            warnings.push("愿望单接口返回 0 条：确认愿望单不是空的".to_string());
+        }
+        Ok((items, warnings))
+    }
+
+    /// 官方接口：只返回 appid / priority / date_added，带 `next_cursor` 分页。
+    ///
+    /// 返回 `(items, warnings)`：分页没取全时必须给用户一条告警，不能静默截断。
+    async fn fetch_official_wishlist(
+        &self,
+        steam_id: &str,
+    ) -> Result<(Vec<SourceItem>, Vec<String>)> {
+        // 该接口实测允许匿名调用（2026-10）；配置了 Key 才带上
+        let key = self.config.api_key.as_deref();
+
+        let mut warnings = Vec::new();
+        let mut items: Vec<SourceItem> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut cursor: Option<String> = None;
+
+        for page in 0..MAX_OFFICIAL_PAGES {
+            let url = official_wishlist_url(key, steam_id, cursor.as_deref());
+            let value: serde_json::Value = self
+                .http
+                .get(url)
+                .header(ACCEPT, "application/json")
+                .send()
+                .await
+                .net()?
+                .json()
+                .await
+                .net()?;
+
+            let response = value.get("response");
+            let entries = response
+                .and_then(|response| response.get("items"))
+                .and_then(|items| items.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut fresh = 0usize;
+            for entry in &entries {
+                let Some(appid) = entry
+                    .get("appid")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v.to_string())
+                else {
+                    continue;
+                };
+                if !seen.insert(appid.clone()) {
+                    continue;
+                }
+                items.push(SourceItem {
+                    source: acgn_core::Source::Steam,
+                    external_id: appid.clone(),
+                    title: format!("Steam App {appid}"),
+                    cover_url: Some(crate::header_url(&appid)),
+                    poster_url: Some(crate::poster_url(&appid)),
+                    priority: entry.get("priority").and_then(|v| v.as_i64()),
+                    source_added_at: entry
+                        .get("date_added")
+                        .and_then(|v| v.as_i64())
+                        .and_then(|seconds| crate::util::from_unix(Some(seconds))),
+                    metadata: Some(entry.clone()),
+                    ..Default::default()
+                });
+                fresh += 1;
+            }
+
+            let next = response
+                .and_then(|response| response.get("next_cursor"))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+
+            let Some(next) = next else { break };
+
+            if fresh == 0 {
+                // 有游标但没拿到新数据：接口语义可能变了，别再无限翻页
+                warnings.push(format!(
+                    "官方愿望单接口返回了 next_cursor 但没有新条目（cursor={next}）：分页语义可能已变化，本次导入可能不完整"
+                ));
+                break;
+            }
+            if page + 1 >= MAX_OFFICIAL_PAGES {
+                warnings.push(format!(
+                    "官方愿望单接口翻页超过 {MAX_OFFICIAL_PAGES} 页仍未结束，本次导入可能不完整"
+                ));
+                break;
+            }
+            cursor = Some(next);
+        }
+
+        Ok((items, warnings))
+    }
+
+    /// 单条 appdetails（限流安全：调用方控制节奏）。
+    ///
+    /// 国区不售的条目在 `cc=cn` 下会返回 `success:false`（联机商店不卖，但数据存在），
+    /// 因此配置的国家拿不到时用 `us` 再试一次——否则用户会看到一堆「可能已下架」的假失败。
+    async fn fetch_app_details_live(&self, appid: &str) -> Result<Option<SourceItem>> {
+        let primary = self
+            .fetch_app_details_for_country(appid, &self.config.country)
+            .await?;
+        if primary.is_some() || self.config.country == FALLBACK_COUNTRY {
+            return Ok(primary);
+        }
+
+        self.fetch_app_details_for_country(appid, FALLBACK_COUNTRY)
+            .await
+    }
+
+    async fn fetch_app_details_for_country(
+        &self,
+        appid: &str,
+        country: &str,
+    ) -> Result<Option<SourceItem>> {
+        let url = app_details_url(appid, country, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if status.as_u16() == 429 {
+            return Err(Error::rejected(
+                "appdetails 触发限流（HTTP 429），请稍后再补全",
+            ));
+        }
+        if !status.is_success() {
+            return Err(Error::rejected(format!("appdetails 返回 HTTP {status}")));
+        }
+
+        let value: serde_json::Value = response.json().await.net()?;
+        let entry = value.get(appid).cloned().unwrap_or(serde_json::Value::Null);
+        Ok(parse_app_details(&entry).map(|data| data.to_source_item(appid)))
+    }
+
+    /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
+    pub async fn app_details_batch(&self, appids: &[String]) -> Result<AppDetailsBatch> {
+        if let Some(fixture) = &self.fixture {
+            let mut items = Vec::new();
+            let mut warnings = Vec::new();
+            for appid in appids {
+                match fixture.app_details(appid) {
+                    Some(response) if response.success => match &response.data {
+                        Some(data) => items.push(data.to_source_item(appid)),
+                        None => warnings.push(format!("{appid}: fixture 里 data 为空")),
+                    },
+                    _ => warnings.push(format!(
+                        "{appid}: fixture ({}) 里没有详情数据",
+                        fixture
+                            .appdetails_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    )),
+                }
+            }
+            return Ok(AppDetailsBatch {
+                items,
+                warnings,
+                last_error: None,
+            });
+        }
+
+        let mut items = Vec::new();
+        let mut warnings = Vec::new();
+        let mut last_error: Option<Error> = None;
+        let concurrency = self.config.enrich_concurrency.max(1);
+
+        'outer: for chunk in appids.chunks(concurrency) {
+            let futures = chunk.iter().map(|appid| {
+                let appid = appid.clone();
+                let client = self;
+                async move {
+                    let result = client.fetch_app_details_live(&appid).await;
+                    (appid, result)
+                }
+            });
+            let results = join_all(futures).await;
+
+            for (appid, result) in results {
+                match result {
+                    Ok(Some(item)) => items.push(item),
+                    Ok(None) => warnings.push(format!("{appid}: Steam 未返回详情（可能已下架）")),
+                    Err(err) => {
+                        let rejected = matches!(err, Error::SourceRejected(_));
+                        warnings.push(format!("{appid}: {err}"));
+                        if rejected {
+                            warnings.push(
+                                "已触发 Steam 限流，剩余条目稍后重试即可（已完成的会保留）"
+                                    .to_string(),
+                            );
+                        }
+                        last_error = Some(err);
+                        if rejected {
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if self.config.enrich_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
+            }
+        }
+
+        Ok(AppDetailsBatch {
+            items,
+            warnings,
+            last_error,
+        })
+    }
+
+    /// 抓一个 app 的详情（详情页「刷新元数据」用）。
+    ///
+    /// 语义区分：Steam 明确返回「没有这个 app」（已下架）→ `Ok(None)`；
+    /// 限流/拒绝 → `Err(SourceRejected)`，让上层返回 422「稍后重试」而不是「可能已下架」。
+    pub async fn app_details_one(&self, appid: &str) -> Result<Option<SourceItem>> {
+        let batch = self.app_details_batch(&[appid.to_string()]).await?;
+        if batch.items.is_empty() {
+            if let Some(err) = batch.last_error {
+                return Err(err);
+            }
+            warn!(appid, warnings = ?batch.warnings, "未取到 appdetails");
+            return Ok(None);
+        }
+        Ok(batch.items.into_iter().next())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P1 回归：reqwest 的错误 Display 带完整请求 URL（含 query），而官方接口的
+    /// API Key 就在 query 里——`net()` 必须脱敏，否则密钥会进日志/import_runs/API 响应。
+    #[tokio::test]
+    async fn net_redacts_url_and_query() {
+        let client = reqwest::Client::new();
+        let err = client
+            .get("http://127.0.0.1:1/IWishlistService/GetWishlist/v1/?key=SECRET_KEY_FOR_TEST&steamid=1")
+            .send()
+            .await
+            .net()
+            .expect_err("连接失败应当报错");
+
+        let text = err.to_string();
+        assert!(
+            !text.contains("SECRET_KEY_FOR_TEST"),
+            "错误信息里不能出现 API Key：{text}"
+        );
+        assert!(
+            !text.contains("IWishlistService"),
+            "错误信息里不应包含请求 URL：{text}"
+        );
+        assert!(
+            matches!(err, acgn_core::Error::Network(_)),
+            "应归类为网络错误，实际：{err:?}"
+        );
+    }
+
+    #[test]
+    fn parses_id_inputs() {
+        assert_eq!(
+            parse_id_input("76561197960287930").unwrap(),
+            IdInput::Numeric("76561197960287930".into())
+        );
+        assert_eq!(
+            parse_id_input("https://steamcommunity.com/profiles/76561197960287930/").unwrap(),
+            IdInput::Numeric("76561197960287930".into())
+        );
+        assert_eq!(
+            parse_id_input("https://steamcommunity.com/id/gaben/").unwrap(),
+            IdInput::Vanity("gaben".into())
+        );
+        assert_eq!(
+            parse_id_input("gaben").unwrap(),
+            IdInput::Vanity("gaben".into())
+        );
+        assert!(parse_id_input("").is_err());
+        assert!(parse_id_input("这是一个非法输入 with spaces").is_err());
+    }
+}

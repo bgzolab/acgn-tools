@@ -1,65 +1,134 @@
-# Template: everything based here.
+# ACGN Tools
 
-[![Contributors](https://img.shields.io/github/contributors/bgzolab/template.svg?style=for-the-badge)](https://github.com/bgzolab/template/graphs/contributors)
-[![Forks](https://img.shields.io/github/forks/bgzolab/template.svg?style=for-the-badge)](https://github.com/bgzolab/template/network/members)
-[![Stargazers](https://img.shields.io/github/stars/bgzolab/template.svg?style=for-the-badge)](https://github.com/bgzolab/template/stargazers)
-[![Issues](https://img.shields.io/github/issues/bgzolab/template.svg?style=for-the-badge)](https://github.com/bgzolab/template/issues)
-[![Licence](https://img.shields.io/github/license/bgzolab/template.svg?style=for-the-badge)](https://github.com/bgzolab/template/blob/template/LICENCE)
+[![Contributors](https://img.shields.io/github/contributors/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/graphs/contributors)
+[![Forks](https://img.shields.io/github/forks/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/network/members)
+[![Stargazers](https://img.shields.io/github/stars/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/stargazers)
+[![Issues](https://img.shields.io/github/issues/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/issues)
+[![Licence](https://img.shields.io/github/license/bgzolab/acgn-tools.svg?style=for-the-badge)](https://github.com/bgzolab/acgn-tools/blob/main/LICENCE)
 [![Telegram](https://img.shields.io/badge/-telegram-black.svg?style=for-the-badge&logo=telegram&colorB=555)](https://t.me/imbGZo)
 
-![template Name Screen Shot](https://pub-89c11651a8434f18a530bd6f93e399da.r2.dev/2025/1753254271482.JPG)
+A self-hosted collection manager for **ACGN** (anime / comic / game / novel).
+The current focus is **games**: import your Steam wishlist into your own library, enrich it
+with store metadata, and keep track of what you actually play.
 
-A template repository for my projects, whch contains a basic structure and some common files used in all my projects.
+> Status: early MVP — the REST API and the web UI are usable; the Tauri desktop client and
+> the non-game media types are not implemented yet.
 
-You can use this template to create your own projects by forking it or cloning it.
+## Features
 
-## Getting Started
+- **Steam wishlist import in one click** — steamID64, vanity URL or profile link; no API key
+  and no cookie required
+- **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
+  discount and release date, fetched on demand
+- **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
+  dropped / ignored), rating, progress, playtime, notes and favorites
+- **Library view** — filter by status, search, nine sort orders, pagination
+- **Dashboard** — status breakdown, wishlist value per currency, recently added, currently
+  playing and recent sync history
+- **Import history** — every run records added / updated / skipped / missing counts, duration
+  and warnings (failed runs included)
+- **Offline mode** — the bundled `fixtures/steam` sample data runs the whole flow without
+  network access; the test suite uses the same approach
+- **Full export** — `GET /api/export/json` for backups, and the basis for future sync
 
-Before you start, make sure you have Git installed on your machine. You can download it from [here](https://git-scm.com/downloads).
+## Quick start
 
-Add the remote repository:
+```bash
+# Requirements: Rust 1.85+, Node 20+, pnpm
+git clone git@github.com:bgzolab/acgn-tools.git && cd acgn-tools
 
-```shell
-git remote add origin git@github.com:bgzolab/template.git
+# 1. Backend — listens on 127.0.0.1:8787, SQLite file at ./data/acgn.db
+cargo run -p acgn-server -- serve
+
+# 2. Frontend — the dev server proxies /api to the backend
+cd web && pnpm install && pnpm dev     # → http://127.0.0.1:5173
 ```
 
-Fetch the `template` branch from the remote repository:
+Open the app, switch to **Import & Sync**, paste your SteamID64 (or vanity URL), and import.
 
-```shell
-git fetch origin template
+Want to look around without touching the network first?
+
+```bash
+ACGN_STEAM_FIXTURE=fixtures/steam cargo run -p acgn-server -- serve
 ```
 
-Merge the `template` branch into your local repository to get started:
+Deploy as a single binary (API and the built frontend on one port):
 
-```shell
-git merge origin/template --allow-unrelated-histories
+```bash
+cargo build --release -p acgn-server
+cd web && pnpm build
+./target/release/acgn-server serve
 ```
 
-## Usage
+## Configuration
 
-Use this space to show useful examples of how a project can be used. Additional screenshots, code examples and demos work well in this space. You may also link to more resources.
+Everything is configured through environment variables — see [`.env.example`](.env.example)
+for a template.
 
-_For more examples, please refer to the [Documentation](https://github.com/bgzolab/template)_
+| Variable | Default | Description |
+|---|---|---|
+| `ACGN_BIND` | `127.0.0.1:8787` | Listen address; use `0.0.0.0:8787` to expose it on your LAN |
+| `ACGN_DB` | `./data/acgn.db` | SQLite file path |
+| `ACGN_WEB_DIR` | `./web/dist` | Built frontend served by the backend |
+| `ACGN_CORS_ORIGINS` | localhost:5173 only | Comma-separated CORS allowlist (same-origin deployments need none) |
+| `ACGN_LOG` | `info,…` | `tracing` filter directives |
+| `ACGN_STEAM_FIXTURE` | unset | Point at `fixtures/steam` to run fully offline |
+| `STEAM_API_KEY` | unset | Optional; only sent when configured (the official wishlist API works anonymously) |
+| `STEAM_COUNTRY` / `STEAM_LANGUAGE` | `cn` / `schinese` | Store country and language (prices, titles, descriptions) |
+| `STEAM_ENRICH_CONCURRENCY` / `STEAM_ENRICH_DELAY_MS` | `1` / `1500` | Metadata enrichment rate (≈0.67 req/s by default, matching Steam's `appdetails` budget) |
+
+> Steam store and API endpoints are unreachable from mainland China without a proxy. If
+> requests time out, check your proxy's routing rules first — a `Steam → DIRECT` rule is the
+> usual culprit.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/design.md`](docs/design.md) | Architecture, data model and synchronization rules |
+| [`docs/api.md`](docs/api.md) | HTTP API reference; runnable samples in [`docs/api.http`](docs/api.http) |
+| [`AGENTS.md`](AGENTS.md) | Working agreements for AI coding agents |
+
+## Development
+
+```bash
+just verify     # clippy + tests + frontend typecheck and build
+just demo       # run the offline demo
+just fixture    # regenerate the bundled sample data (this one hits the network)
+```
+
+The quality gates are `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace` and `cd web && pnpm typecheck && pnpm build`.
+[`AGENTS.md`](AGENTS.md) lists every command and convention.
+
+## Roadmap
+
+- [x] Domain model, SQLite storage and import merge semantics
+- [x] Steam wishlist import, metadata enrichment, dashboard, import history
+- [ ] Price history and discount alerts
+- [ ] Bangumi integration (anime / comic / novel, two-way progress sync)
+- [ ] Xiaoheihe (小黑盒) — no public API; needs research or a manual import path
+- [ ] Tauri desktop client reusing the same crates and frontend
+- [ ] Incremental multi-device sync
 
 ## Contributing
 
-Any contributions made are **greatly appreciated**.
+Contributions of any kind are **greatly appreciated**. If you have a suggestion, fork the repo
+and open a pull request, or open an issue with the `enhancement` tag. And a star never hurts 🙂
 
-If you have a suggestion that would make this better, please fork the repo and create a pull request. You can also simply open an issue with the tag "enhancement".
-Don't forget to give the project a star! Thanks again!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'feat(module):add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+1. Fork the project
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes — English `type(scope):subject` title (a Chinese body is fine), e.g.
+   `feat(steam):support vanity URLs`
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a pull request — it will be merged with **squash**
 
 Top contributors:
 
-<a href="https://github.com/bgzolab/template/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=bgzolab/template" alt="contrib.rocks image" />
+<a href="https://github.com/bgzolab/acgn-tools/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=bgzolab/acgn-tools" alt="contrib.rocks image" />
 </a>
 
 ## License
 
-All code is licensed under the AGPL-3.0 license. See `LICENSE` for more information.
+All code is licensed under the AGPL-3.0 license. See [`LICENCE`](LICENCE).
