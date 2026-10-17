@@ -270,6 +270,40 @@ impl Db {
         })
     }
 
+    /// 批量删除条目（本地动作），返回实际删除的行数。
+    ///
+    /// 语义约定：
+    ///
+    /// * 在一个事务里逐条删除，未知 id 静默忽略（调用方不必先查存在性）；
+    /// * `library_entries` 由外键级联清理（连接层已开启 `foreign_keys`）；
+    /// * 不写 `import_runs`：删除不属于任何一次导入；
+    /// * 来源里仍然存在的条目，下次导入会重新加回来（记作 `added`）——这是
+    ///   「删除」与「同步」的边界：同步永远不会删除，删除永远只来自用户。
+    pub async fn delete_games(&self, ids: &[i64]) -> Result<i64> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut tx = self.pool.begin().await.db()?;
+        let mut deleted = 0;
+        for id in ids {
+            let result = sqlx::query("DELETE FROM games WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await
+                .db()?;
+            deleted += result.rows_affected() as i64;
+        }
+        tx.commit().await.db()?;
+
+        Ok(deleted)
+    }
+
+    /// 删除单条；返回是否真的删到了（调用方用它区分 404）。
+    pub async fn delete_game(&self, id: i64) -> Result<bool> {
+        Ok(self.delete_games(&[id]).await? > 0)
+    }
+
     /// 全库导出（备份 / 未来同步用）。
     pub async fn export_all(&self) -> Result<Vec<GameWithEntry>> {
         let page = self
