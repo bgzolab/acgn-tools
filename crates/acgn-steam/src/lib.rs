@@ -11,6 +11,7 @@
 //! 所有路径最终都产出 [`acgn_core::SourceItem`]，入库逻辑与其它数据源共用一套。
 
 pub mod appdetails;
+pub mod assets;
 pub mod client;
 pub mod config;
 pub mod fixture;
