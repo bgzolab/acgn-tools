@@ -53,6 +53,17 @@ Content-Type: application/json
 ### 刷新单个条目的商店元数据
 POST {{host}}/api/games/1/refresh-metadata
 
+### 删除条目（本地动作；来源里还在的下次导入会重新加回来）
+DELETE {{host}}/api/games/1
+
+### 批量删除（多选清理；未知 id 忽略，返回实际删除条数）
+POST {{host}}/api/games/delete
+Content-Type: application/json
+
+{
+  "ids": [1, 2, 3]
+}
+
 ### 导入 Steam 愿望单（dry_run=true 只预览不写入）
 POST {{host}}/api/imports/steam/wishlist
 Content-Type: application/json
