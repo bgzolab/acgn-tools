@@ -6,8 +6,17 @@ import type { GameWithEntry } from "../api/types";
 import PosterImage from "./PosterImage.vue";
 import StatusBadge from "./StatusBadge.vue";
 
-const props = defineProps<{ item: GameWithEntry }>();
-const emit = defineEmits<{ open: [id: number]; favorite: [item: GameWithEntry] }>();
+const props = defineProps<{
+  item: GameWithEntry;
+  /** 批量管理模式：点卡片 = 选中/取消，而不是打开详情 */
+  selectable?: boolean;
+  selected?: boolean;
+}>();
+const emit = defineEmits<{
+  open: [id: number];
+  favorite: [item: GameWithEntry];
+  select: [id: number];
+}>();
 
 const game = computed(() => props.item.game);
 const entry = computed(() => props.item.entry);
@@ -20,17 +29,30 @@ const priceText = computed(() => {
   if (game.value.is_free) return "免费";
   return formatPrice(game.value.price_final ?? game.value.price_initial, game.value.price_currency);
 });
+
+function onCardClick() {
+  if (props.selectable) emit("select", game.value.id);
+  else emit("open", game.value.id);
+}
 </script>
 
 <template>
-  <article class="game-card" @click="emit('open', game.id)">
+  <article
+    class="game-card"
+    :class="{ selectable: props.selectable, selected: props.selectable && props.selected }"
+    @click="onCardClick"
+  >
     <div class="poster">
       <PosterImage :src="game.poster_url || game.cover_url" :alt="title" />
       <div class="corner left">
         <StatusBadge :status="entry.status" />
       </div>
       <div class="corner right">
+        <span v-if="props.selectable" class="pick" :class="{ on: props.selected }">
+          {{ props.selected ? "✓" : "" }}
+        </span>
         <button
+          v-else
           class="icon-btn"
           :class="{ on: entry.favorite }"
           :title="entry.favorite ? '取消收藏' : '加入收藏'"

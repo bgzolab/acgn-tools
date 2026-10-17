@@ -2,7 +2,7 @@
 /** 条目详情抽屉：改状态 / 评分 / 进度 / 备注，并展示完整元数据。 */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
-import { getGame, patchGame, refreshMetadata } from "../api";
+import { deleteGame, getGame, patchGame, refreshMetadata } from "../api";
 import {
   STATUS_LABELS,
   STATUS_ORDER,
@@ -25,12 +25,15 @@ import {
 import { errorText, pushToast } from "../composables/toast";
 
 const props = defineProps<{ gameId: number | null }>();
-const emit = defineEmits<{ close: []; updated: [item: GameWithEntry] }>();
+const emit = defineEmits<{ close: []; updated: [item: GameWithEntry]; deleted: [id: number] }>();
 
 const item = ref<GameWithEntry | null>(null);
 const loading = ref(false);
 const saving = ref(false);
 const refreshing = ref(false);
+/** 删除按钮的二段确认：先「删除条目」，再「确认删除」 */
+const deleteArmed = ref(false);
+const deleting = ref(false);
 const noteDraft = ref("");
 /** 以「分钟」为编辑单位：小时 round-trip 会把 121 分钟悄悄写成 120 分钟 */
 const playtimeMinutes = ref<string>("");
@@ -161,6 +164,23 @@ async function doRefresh() {
   }
 }
 
+async function doDelete() {
+  if (!item.value || deleting.value) return;
+  const targetId = item.value.game.id;
+  const label = title.value;
+  deleting.value = true;
+  try {
+    await deleteGame(targetId);
+    pushToast("ok", "已删除", `「${label}」已从本地移除`);
+    emit("deleted", targetId);
+  } catch (error) {
+    const { title: toastTitle, message } = errorText(error);
+    pushToast("err", toastTitle, message);
+  } finally {
+    deleting.value = false;
+  }
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") emit("close");
 }
@@ -168,6 +188,7 @@ function onKeydown(event: KeyboardEvent) {
 watch(
   () => props.gameId,
   (id) => {
+    deleteArmed.value = false;
     if (id !== null) void load(id);
     else item.value = null;
   },
@@ -341,6 +362,24 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           <dt>来源 ID</dt>
           <dd>{{ game.source }} / {{ game.external_id }}</dd>
         </dl>
+
+        <div class="divider" />
+
+        <!-- 危险区：删除是本地动作，来源里还在的下次导入会重新加回来 -->
+        <div class="row tight">
+          <template v-if="!deleteArmed">
+            <button class="btn danger sm" @click="deleteArmed = true">删除条目</button>
+            <span class="hint">只删本地数据；来源里还有的条目，下次导入会重新加回来</span>
+          </template>
+          <template v-else>
+            <span class="hint">删除后个人状态（评分 / 备注 / 时长）一并丢失，确定？</span>
+            <div class="spacer" />
+            <button class="btn danger sm" :disabled="deleting" @click="doDelete">
+              {{ deleting ? "删除中…" : "确认删除" }}
+            </button>
+            <button class="btn ghost sm" :disabled="deleting" @click="deleteArmed = false">取消</button>
+          </template>
+        </div>
       </template>
     </div>
   </aside>
