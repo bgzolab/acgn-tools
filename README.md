@@ -19,7 +19,7 @@ with store metadata, and keep track of what you actually play.
 - **Steam wishlist import in one click** — steamID64, vanity URL or profile link; no API key
   and no cookie required
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
-  discount and release date, fetched on demand
+  discount, release date and the vertical library poster, fetched on demand
 - **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
   dropped / ignored), rating, progress, playtime, notes and favorites
 - **Library view** — filter by status, search, nine sort orders, pagination
