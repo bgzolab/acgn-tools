@@ -228,7 +228,6 @@ pub async fn sync_steam_achievements(
         for (entry, result) in results {
             match result {
                 Ok(progress) => {
-                    consecutive_failures = 0;
                     // 每条取一次时间：整批可能跑一分钟，「检查于 …」应是实际检查时刻，
                     // 而不是批次开始时间（否则同轮内时钟全相同，排序退化为按 id）
                     match state
@@ -237,6 +236,8 @@ pub async fn sync_steam_achievements(
                         .await
                     {
                         Ok(outcome) => {
+                            // 只有「请求 + 写库」都成功才算一次完好处理
+                            consecutive_failures = 0;
                             if progress.is_some() {
                                 checked += 1;
                             } else {
@@ -253,13 +254,21 @@ pub async fn sync_steam_achievements(
                             }
                         }
                         Err(err) => {
-                            // 单条写库失败（典型：条目在轮询途中被删除）不该中止整批
+                            // 单条写库失败（典型：条目在轮询途中被删除）不该中止整批；
+                            // 但连续的存储故障也要熔断，否则会打完整个 limit
                             failed += 1;
                             if failure_samples.len() < 5 {
                                 failure_samples.push(format!("{}: {err}", entry.external_id));
                             }
                             if !matches!(err, Error::NotFound(_)) {
+                                consecutive_failures += 1;
                                 last_error = Some(err);
+                                if consecutive_failures >= MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES {
+                                    warnings.push(format!(
+                                        "连续 {MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES} 个条目处理失败（请求或写库），已暂停本轮，稍后再试"
+                                    ));
+                                    break 'outer;
+                                }
                             }
                         }
                     }
@@ -282,7 +291,7 @@ pub async fn sync_steam_achievements(
                     // 系统性故障（Key 失效但返回 JSON、接口变更……）时不要空转打满 limit
                     if consecutive_failures >= MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES {
                         warnings.push(format!(
-                            "连续 {MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES} 个请求失败，已暂停本轮（疑似 Key 失效或接口故障），稍后再试"
+                            "连续 {MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES} 个条目处理失败（请求或写库），已暂停本轮，稍后再试"
                         ));
                         break 'outer;
                     }

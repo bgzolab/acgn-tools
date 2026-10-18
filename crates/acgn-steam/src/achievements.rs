@@ -44,8 +44,9 @@ struct PlayerAchievementsPayload {
 ///
 /// * `Ok(Some(progress))`：正常回答（含「该游戏没有统计 / 成就集」的 `0/0`）；
 /// * `Ok(None)`：已知的「取不到」（未拥有 / 隐私）——只刷新轮询时钟；
-/// * `Err(upstream)`：**未知载荷**（API 变更、代理错误页、新错误文案……）——
-///   必须走失败路径，不能让整轮轮询「检查过了但什么也没学到」还推走时钟。
+/// * `Err(SourceRejected)`：已知的 Key / 权限失效文案——调用方应停止本轮（422）；
+/// * `Err(Upstream)`：**未知载荷**（API 变更、代理错误页……）——让循环按失败计数，
+///   由连续失败熔断兜底，而不是被吞成「该账号没有」。
 pub fn parse_player_achievements(raw: &serde_json::Value) -> Result<Option<AchievementProgress>> {
     let payload: PlayerAchievementsPayload = serde_json::from_value(raw.clone())
         .map_err(|err| Error::upstream(format!("成就响应结构无法识别: {err}")))?;
@@ -86,6 +87,10 @@ pub fn parse_player_achievements(raw: &serde_json::Value) -> Result<Option<Achie
     // 未拥有 / 隐私：已知的「取不到」
     if lowered.contains("not public") {
         return Ok(None);
+    }
+    // Key / 权限失效：走「拒绝」路径（422），与库存接口的 401 处理保持一致
+    if lowered.contains("verify your key") || lowered.contains("access is denied") {
+        return Err(Error::rejected(format!("Steam 拒绝了成就请求: {error}")));
     }
 
     Err(Error::upstream(format!("成就接口返回未知错误: {error}")))
@@ -160,16 +165,33 @@ mod tests {
     }
 
     /// 未知错误载荷（API 变更 / 代理错误页 / 新错误文案）必须走失败路径，
-    /// 不能被吞成「该账号没有」——那会让整轮轮询「检查过了但没学到东西」。
+    /// 不能被吞成「该账号没有」——那会让整轮轮询「检查过了但没学到东西」；
+    /// 已知的 Key 失效文案则归类为「拒绝」（422），与库存接口一致。
     #[test]
     fn unknown_error_payloads_are_reported_as_upstream_errors() {
+        // Key / 权限失效 → 拒绝（422）
         let raw = serde_json::json!({
             "playerstats": { "error": "Please verify your key= parameter", "success": false }
         });
-        assert!(parse_player_achievements(&raw).is_err());
+        assert!(matches!(
+            parse_player_achievements(&raw),
+            Err(Error::SourceRejected(_))
+        ));
+
+        // 未知文案 → 上游异常，交给连续失败熔断
+        let raw = serde_json::json!({
+            "playerstats": { "error": "Something totally new", "success": false }
+        });
+        assert!(matches!(
+            parse_player_achievements(&raw),
+            Err(Error::Upstream(_))
+        ));
 
         // 连 playerstats 都没有的载荷同样不能当成「取不到」
         let raw = serde_json::json!({ "error": "upstream is down" });
-        assert!(parse_player_achievements(&raw).is_err());
+        assert!(matches!(
+            parse_player_achievements(&raw),
+            Err(Error::Upstream(_))
+        ));
     }
 }

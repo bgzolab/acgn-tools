@@ -394,7 +394,8 @@ impl SteamClient {
     /// 返回三态：
     /// * `Ok(Some(progress))`：接口明确回答（`total = 0` = 该游戏没有成就集）；
     /// * `Ok(None)`：取不到（未拥有 / 隐私），调用方只刷新检查时间；
-    /// * `Err(SourceRejected)`：限流或 Key 无效，调用方应停止本轮。
+    /// * `Err(SourceRejected)`：限流或 Key 失效（422），调用方应停止本轮；
+    ///   `Err` 的其它形态（未知载荷等）由连续失败熔断兜底。
     pub async fn fetch_player_achievements(
         &self,
         steam_id: &str,

@@ -1170,7 +1170,7 @@ fn game_from_item(item: &SourceItem, now: DateTime<Utc>, metadata_stamp: bool) -
 }
 
 fn new_entry(game_id: i64, item: &SourceItem, now: DateTime<Utc>) -> LibraryEntry {
-    LibraryEntry {
+    let mut entry = LibraryEntry {
         game_id,
         status: item.status.unwrap_or(Status::Wishlist),
         priority: item.priority,
@@ -1191,7 +1191,11 @@ fn new_entry(game_id: i64, item: &SourceItem, now: DateTime<Utc>) -> LibraryEntr
         last_synced_at: Some(now),
         created_at: now,
         updated_at: now,
-    }
+    };
+    // 与手动 PATCH / 收养路径共用同一套附带写入：首次落库就带「在玩 / 已通关」
+    // 的条目也要有开始时间（JSON 导入声明 completed 时同理补完成时间与进度）
+    apply_status_side_effects(&mut entry, now);
+    entry
 }
 
 async fn load_in_tx(

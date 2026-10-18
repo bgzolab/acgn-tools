@@ -776,9 +776,14 @@ async fn library_import_status_follows_playtime() {
     assert_eq!(never.entry.status, Status::Backlog, "没玩过 → 待玩");
     assert_eq!(never.entry.playtime_minutes, Some(0), "0 分钟也是有效时长");
     assert_eq!(never.entry.source_playtime_minutes, Some(0));
+    assert!(never.entry.started_at.is_none(), "待玩不该有开始时间");
 
     let played = get(&db, "1002").await;
     assert_eq!(played.entry.status, Status::Playing, "有游玩时长 → 在玩");
+    assert!(
+        played.entry.started_at.is_some(),
+        "首次落库就是在玩也要有开始时间（与手动 PATCH / 收养一致）"
+    );
     assert_eq!(played.entry.playtime_minutes, Some(4621));
     assert_eq!(played.entry.source_playtime_minutes, Some(4621));
 
