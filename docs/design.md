@@ -250,7 +250,13 @@ Three paths, chosen automatically:
 - Poll order is `achievements_checked_at` null-first, then oldest-first (rotating refreshes),
   and the response reports `pending` (never checked) so the UI can offer "click again to
   continue". Checking is paced at 2 concurrent + a 250 ms gap (~8 games/s); HTTP 429 stops the
-  run gracefully and already-processed entries stay committed.
+  run gracefully and already-processed entries stay committed. Five consecutive request
+  failures stop the run early (systemic failure protection: bad key returning JSON, upstream
+  changes, …), and every run — including a stopped or failed one — is recorded in
+  `import_runs`.
+- A check that finds nothing new only advances `achievements_checked_at`; `updated_at` moves
+  only when stored values actually changed (§4.4), and a single row failing to write (for
+  example an entry deleted mid-run) never aborts the batch.
 - Full achievements promote `wishlist` / `backlog` / `playing` to `completed`; user-set
   `completed` / `on_hold` / `dropped` / `ignored` are never reverted.
 - The fixture generator writes deterministic demo achievements (`achievements.json`) so the

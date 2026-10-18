@@ -205,8 +205,11 @@ export interface EnrichSummary {
 export interface AchievementSyncSummary {
   /** 本次拿到成就数据的条目数（该账号确实拥有且有统计） */
   checked: number;
-  /** 因「全成就」被标记为已通关的条数 */
+  /** 写库发生了变化的条目数（含 promoted） */
+  updated: number;
+  /** 其中：因「全成就」被标记为已通关的条数 */
   promoted: number;
+  /** 拿到数据但没有任何变化 */
   unchanged: number;
   /** 该账号没有这个游戏（未拥有 / 隐私）：只刷新了检查时间 */
   unavailable: number;

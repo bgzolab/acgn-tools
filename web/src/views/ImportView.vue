@@ -92,8 +92,8 @@ async function runAchievements() {
     pushToast(
       summary.promoted > 0 ? "ok" : "warn",
       summary.promoted > 0 ? "成就检查完成" : "成就检查完成（没有新全成就）",
-      `检查 ${summary.checked} · 全成就升级 ${summary.promoted} · 未变化 ${summary.unchanged}` +
-        ` · 该账号没有 ${summary.unavailable} · 失败 ${summary.failed}` +
+      `检查 ${summary.checked} · 更新 ${summary.updated}（含全成就升级 ${summary.promoted}）` +
+        ` · 未变 ${summary.unchanged} · 该账号没有 ${summary.unavailable} · 失败 ${summary.failed}` +
         (summary.pending > 0 ? ` · 还剩 ${summary.pending} 个` : ""),
     );
     await loadHistory();
@@ -353,9 +353,9 @@ onMounted(() => {
             </button>
           </div>
           <div v-if="achievementResult" class="hint" style="margin-top: 6px">
-            检查 {{ achievementResult.checked }} · 全成就升级 {{ achievementResult.promoted }} ·
-            未变化 {{ achievementResult.unchanged }} · 该账号没有 {{ achievementResult.unavailable }}
-            · 失败 {{ achievementResult.failed }}
+            检查 {{ achievementResult.checked }} · 更新 {{ achievementResult.updated }}（含全成就升级
+            {{ achievementResult.promoted }}） · 未变 {{ achievementResult.unchanged }} · 该账号没有
+            {{ achievementResult.unavailable }} · 失败 {{ achievementResult.failed }}
             <template v-if="achievementResult.pending > 0">
               · 还剩 {{ achievementResult.pending }} 个，再点一次继续
             </template>

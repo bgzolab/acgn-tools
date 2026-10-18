@@ -168,16 +168,18 @@ as `completed`:
 - Response:
 
 ```json
-{ "checked": 24, "promoted": 6, "unchanged": 15, "unavailable": 80, "failed": 0, "pending": 21,
-  "source_mode": "live_with_key", "duration_ms": 9123, "warnings": ["6 个游戏全成就，已标记为「已通关」"] }
+{ "checked": 24, "updated": 18, "promoted": 6, "unchanged": 6, "unavailable": 80, "failed": 0,
+  "pending": 21, "source_mode": "live_with_key", "duration_ms": 9123,
+  "warnings": ["6 个游戏全成就，已标记为「已通关」"] }
 ```
 
-`checked` counts entries with real achievement data (this account owns them); `unavailable`
-means the account does not own that game (still checked, progress kept); `failed` is a real
-request error and is retried on the next click.
+`checked` counts entries with real achievement data (this account owns them); `updated` counts
+entries whose stored values actually changed (promotions are a subset); `unavailable` means the
+account does not own that game (still checked, progress kept); `failed` is a real request error
+and is retried on the next click. Five consecutive failures stop the run (systemic failure
+protection) and are reported in `warnings`.
 
-- Recorded in the run history as `steam_achievements`. If nothing succeeds (rate limit / bad
-  key) the request fails with `422` like the enrich endpoint.
+- Recorded in the run history as `steam_achievements` (also when the run stops early / fails).
 
 ### POST /api/imports
 

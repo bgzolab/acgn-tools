@@ -12,6 +12,7 @@ use axum::extract::State;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tracing::warn;
 
 use crate::error::{ApiError, ApiResult};
 use crate::extract::{ValidJson, ValidPath, ValidQuery};
@@ -144,6 +145,10 @@ pub async fn import_steam_library(
 const ACHIEVEMENTS_CONCURRENCY: usize = 2;
 const ACHIEVEMENTS_DELAY_MS: u64 = 250;
 
+/// 连续失败多少个请求就熔断本轮：系统性故障（Key 失效但返回 JSON、接口变更……）时
+/// 不要空转打满 limit；正常回答（未拥有 / 没有统计）不会计入连续失败。
+const MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES: usize = 5;
+
 /// POST /api/imports/steam/achievements —— 检查成就进度（全成就 → 已通关）。
 ///
 /// 与库存导入一样需要 `steam_id`（成就是「某账号的进度」）；
@@ -170,6 +175,7 @@ pub async fn sync_steam_achievements(
     if pending.is_empty() {
         return Ok(Json(AchievementSyncSummary {
             checked: 0,
+            updated: 0,
             promoted: 0,
             unchanged: 0,
             unavailable: 0,
@@ -181,12 +187,29 @@ pub async fn sync_steam_achievements(
         }));
     }
 
+    // 先开运行记录：即使中途熔断/失败，同步历史里也有这一笔（AGENTS.md 约定）
+    let run_id = state
+        .db
+        .begin_run(
+            Source::Steam,
+            "steam_achievements",
+            Some(json!({
+                "input": request.steam_id,
+                "steam_id": steam_id,
+                "resolved_via": resolved_via,
+                "limit": limit,
+            })),
+        )
+        .await?;
+
     let now = Utc::now();
     let mut checked = 0i64;
+    let mut updated = 0i64;
     let mut promoted = 0i64;
     let mut unchanged = 0i64;
     let mut unavailable = 0i64;
     let mut failed = 0i64;
+    let mut consecutive_failures = 0usize;
     let mut last_error: Option<Error> = None;
     let mut failure_samples: Vec<String> = Vec::new();
 
@@ -206,21 +229,42 @@ pub async fn sync_steam_achievements(
         for (entry, result) in results {
             match result {
                 Ok(progress) => {
-                    let outcome = state
+                    consecutive_failures = 0;
+                    match state
                         .db
                         .update_achievements(entry.game_id, progress, now)
-                        .await?;
-                    match (progress, outcome.promoted) {
-                        (Some(_), true) => promoted += 1,
-                        (Some(_), false) => unchanged += 1,
-                        // 未拥有 / 隐私：取不到进度，只刷新了检查时间
-                        (None, _) => unavailable += 1,
-                    }
-                    if progress.is_some() {
-                        checked += 1;
+                        .await
+                    {
+                        Ok(outcome) => {
+                            if progress.is_some() {
+                                checked += 1;
+                            } else {
+                                // 未拥有 / 隐私：取不到进度，只刷新了检查时间
+                                unavailable += 1;
+                            }
+                            if outcome.changed {
+                                updated += 1;
+                            } else if progress.is_some() {
+                                unchanged += 1;
+                            }
+                            if outcome.promoted {
+                                promoted += 1;
+                            }
+                        }
+                        Err(err) => {
+                            // 单条写库失败（典型：条目在轮询途中被删除）不该中止整批
+                            failed += 1;
+                            if failure_samples.len() < 5 {
+                                failure_samples.push(format!("{}: {err}", entry.external_id));
+                            }
+                            if !matches!(err, Error::NotFound(_)) {
+                                last_error = Some(err);
+                            }
+                        }
                     }
                 }
                 Err(err) => {
+                    consecutive_failures += 1;
                     failed += 1;
                     if failure_samples.len() < 5 {
                         failure_samples.push(format!("{}: {err}", entry.external_id));
@@ -234,6 +278,13 @@ pub async fn sync_steam_achievements(
                         );
                         break 'outer;
                     }
+                    // 系统性故障（Key 失效但返回 JSON、接口变更……）时不要空转打满 limit
+                    if consecutive_failures >= MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES {
+                        warnings.push(format!(
+                            "连续 {MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES} 个请求失败，已暂停本轮（疑似 Key 失效或接口故障），稍后再试"
+                        ));
+                        break 'outer;
+                    }
                 }
             }
         }
@@ -241,12 +292,21 @@ pub async fn sync_steam_achievements(
         tokio::time::sleep(std::time::Duration::from_millis(ACHIEVEMENTS_DELAY_MS)).await;
     }
 
-    // 全部失败时直接返回错误（与 enrich 同款处理）：让用户看到「稍后重试」，
+    let duration_ms = started.elapsed().as_millis() as i64;
+    let pending_after = state.db.achievements_pending_count(Source::Steam).await?;
+
+    // 全部失败时按失败收尾（与 enrich 同款处理）：让用户看到「稍后重试」，
     // 而不是一个 0 成功的 200。（unavailable 是正常回答，不算失败。）
     if checked == 0
         && unavailable == 0
+        && updated == 0
+        && unchanged == 0
         && let Some(err) = last_error
     {
+        let message = err.to_string();
+        if let Err(record_err) = state.db.finish_run_err(run_id, &message, duration_ms).await {
+            warn!(run_id, error = %record_err, "写入失败记录时又出错了");
+        }
         return Err(ApiError(err));
     }
 
@@ -261,22 +321,6 @@ pub async fn sync_steam_achievements(
         warnings.push(format!("{promoted} 个游戏全成就，已标记为「已通关」"));
     }
 
-    let duration_ms = started.elapsed().as_millis() as i64;
-    let pending_after = state.db.achievements_pending_count(Source::Steam).await?;
-
-    let run_id = state
-        .db
-        .begin_run(
-            Source::Steam,
-            "steam_achievements",
-            Some(json!({
-                "input": request.steam_id,
-                "steam_id": steam_id,
-                "resolved_via": resolved_via,
-                "limit": limit,
-            })),
-        )
-        .await?;
     state
         .db
         .finish_run_ok(
@@ -284,7 +328,7 @@ pub async fn sync_steam_achievements(
             RunCounts {
                 seen: checked + unavailable + failed,
                 added: 0,
-                updated: promoted,
+                updated,
                 unchanged,
                 skipped: unavailable + failed,
                 missing: 0,
@@ -296,6 +340,7 @@ pub async fn sync_steam_achievements(
 
     Ok(Json(AchievementSyncSummary {
         checked,
+        updated,
         promoted,
         unchanged,
         unavailable,

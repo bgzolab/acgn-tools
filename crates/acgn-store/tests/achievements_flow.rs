@@ -92,6 +92,7 @@ async fn full_achievements_promote_playing_to_completed() {
         .await
         .unwrap();
     assert!(outcome.promoted, "全成就应触发升级");
+    assert!(outcome.changed, "升级必然是一次写库变化");
 
     let entry = get(&db, "3001").await.entry;
     assert_eq!(entry.status, Status::Completed);
@@ -99,7 +100,7 @@ async fn full_achievements_promote_playing_to_completed() {
     assert!(entry.finished_at.is_some(), "已通关应有完成时间");
     assert_eq!(entry.playtime_minutes, Some(120), "时长不受影响");
 
-    // 再查一次全成就：已是已通关，不重复触发
+    // 再查一次全成就：已是已通关，不重复触发，也没有数据变化
     let outcome = db
         .update_achievements(
             id,
@@ -112,6 +113,7 @@ async fn full_achievements_promote_playing_to_completed() {
         .await
         .unwrap();
     assert!(!outcome.promoted);
+    assert!(!outcome.changed);
     assert_eq!(get(&db, "3001").await.entry.status, Status::Completed);
 }
 
@@ -166,7 +168,8 @@ async fn unavailable_achievements_keep_progress_and_refresh_checked_at() {
     let updated_before = get(&db, "3200").await.entry.updated_at;
     let id = get(&db, "3200").await.game.id;
     let later = chrono::Utc::now() + chrono::Duration::seconds(5);
-    db.update_achievements(id, None, later).await.unwrap();
+    let outcome = db.update_achievements(id, None, later).await.unwrap();
+    assert!(!outcome.changed, "取不到数据没有发生任何写库变化");
 
     let entry = get(&db, "3200").await.entry;
     assert_eq!(entry.achievements_achieved, Some(3), "取不到时保留旧进度");
@@ -190,16 +193,18 @@ async fn unchanged_checks_only_touch_the_poll_clock() {
     let before = get(&db, "3400").await.entry;
     let id = before.game_id;
     let later = chrono::Utc::now() + chrono::Duration::seconds(5);
-    db.update_achievements(
-        id,
-        Some(AchievementProgress {
-            achieved: 3,
-            total: 10,
-        }),
-        later,
-    )
-    .await
-    .unwrap();
+    let outcome = db
+        .update_achievements(
+            id,
+            Some(AchievementProgress {
+                achieved: 3,
+                total: 10,
+            }),
+            later,
+        )
+        .await
+        .unwrap();
+    assert!(!outcome.changed, "同样的进度不构成变化");
 
     let after = get(&db, "3400").await.entry;
     assert_eq!(
@@ -212,16 +217,18 @@ async fn unchanged_checks_only_touch_the_poll_clock() {
     );
 
     // 进度真的变了（3 → 4）：这次要写 updated_at
-    db.update_achievements(
-        id,
-        Some(AchievementProgress {
-            achieved: 4,
-            total: 10,
-        }),
-        later,
-    )
-    .await
-    .unwrap();
+    let outcome = db
+        .update_achievements(
+            id,
+            Some(AchievementProgress {
+                achieved: 4,
+                total: 10,
+            }),
+            later,
+        )
+        .await
+        .unwrap();
+    assert!(outcome.changed, "进度变化应报告 changed");
     let changed = get(&db, "3400").await.entry;
     assert_eq!(changed.achievements_achieved, Some(4));
     assert!(changed.updated_at >= later, "有变化时应刷新 updated_at");

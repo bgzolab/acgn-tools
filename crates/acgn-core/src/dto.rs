@@ -316,9 +316,11 @@ impl AchievementProgress {
 pub struct AchievementSyncSummary {
     /// 本次拿到成就数据的条目数（该账号确实拥有且有统计）
     pub checked: i64,
-    /// 因「全成就」被标记为已通关的条数
+    /// 写库发生了变化的条目数（含 `promoted`）
+    pub updated: i64,
+    /// 其中：因「全成就」被标记为已通关的条数
     pub promoted: i64,
-    /// 拿到数据但没有变化（进度不满 / 没有成就集）
+    /// 拿到数据但没有任何变化（进度没动 / 没有成就集）
     pub unchanged: i64,
     /// 该账号没有这个游戏（未拥有 / 隐私）：取不到进度，只刷新了检查时间
     pub unavailable: i64,

@@ -24,6 +24,8 @@ pub struct PendingAchievement {
 pub struct AchievementOutcome {
     /// 是否因「全成就」把状态标记为已通关
     pub promoted: bool,
+    /// 本次写库是否真的发生了数据变化（状态 / 进度 / 完成时间 / 成就值）
+    pub changed: bool,
 }
 
 /// `library_entries` 里成就更新需要的列。
@@ -177,6 +179,6 @@ impl Db {
                 .db()?;
         }
 
-        Ok(AchievementOutcome { promoted })
+        Ok(AchievementOutcome { promoted, changed })
     }
 }
