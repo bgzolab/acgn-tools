@@ -155,3 +155,30 @@ async fn batch_delete_rejects_empty_ids() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_envelope(&body, "invalid");
 }
+
+#[tokio::test]
+async fn batch_delete_rejects_more_than_1000_ids() {
+    let app = test_app().await;
+    let ids: Vec<i64> = (1..=1001).collect();
+    let (status, body) = send(
+        &app,
+        json_request("POST", "/api/games/delete", json!({ "ids": ids })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_envelope(&body, "invalid");
+}
+
+#[tokio::test]
+async fn batch_delete_counts_rows_not_request_ids() {
+    let app = test_app().await;
+    seed(&app, 1).await;
+
+    let (status, body) = send(
+        &app,
+        json_request("POST", "/api/games/delete", json!({ "ids": [1, 1] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["deleted"], 1, "重复 id 不应重复计数：{body}");
+}

@@ -274,7 +274,7 @@ impl Db {
     ///
     /// 语义约定：
     ///
-    /// * 在一个事务里逐条删除，未知 id 静默忽略（调用方不必先查存在性）；
+    /// * 一条 `DELETE ... WHERE id IN (…)` 完成，未知 / 重复 id 静默忽略；
     /// * `library_entries` 由外键级联清理（连接层已开启 `foreign_keys`）；
     /// * 不写 `import_runs`：删除不属于任何一次导入；
     /// * 来源里仍然存在的条目，下次导入会重新加回来（记作 `added`）——这是
@@ -284,19 +284,15 @@ impl Db {
             return Ok(0);
         }
 
-        let mut tx = self.pool.begin().await.db()?;
-        let mut deleted = 0;
+        let mut qb = QueryBuilder::new("DELETE FROM games WHERE id IN (");
+        let mut separated = qb.separated(", ");
         for id in ids {
-            let result = sqlx::query("DELETE FROM games WHERE id = ?")
-                .bind(id)
-                .execute(&mut *tx)
-                .await
-                .db()?;
-            deleted += result.rows_affected() as i64;
+            separated.push_bind(*id);
         }
-        tx.commit().await.db()?;
+        separated.push_unseparated(")");
 
-        Ok(deleted)
+        let result = qb.build().execute(&self.pool).await.db()?;
+        Ok(result.rows_affected() as i64)
     }
 
     /// 删除单条；返回是否真的删到了（调用方用它区分 404）。

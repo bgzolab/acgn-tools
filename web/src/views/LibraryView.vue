@@ -86,6 +86,23 @@ async function onDeleted() {
   if (store.filters.page > Math.max(1, store.totalPages)) store.goPage(store.totalPages);
 }
 
+// 筛选变化后旧的选择不再可见：清空并解除武装，避免「确认删除 N 条」还亮着时误删看不见的条目
+watch(
+  () => [store.filters.status, store.filters.q, store.filters.sort, store.filters.favorite],
+  () => {
+    selectedIds.value = new Set();
+    deleteArmed.value = false;
+  },
+);
+
+// 翻页保留累计选择（跨页多选是特性），但确认按钮必须重新武装
+watch(
+  () => store.filters.page,
+  () => {
+    deleteArmed.value = false;
+  },
+);
+
 const statuses = computed(() => meta.statuses);
 
 let searchTimer: number | undefined;
