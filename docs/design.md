@@ -161,7 +161,9 @@ Three paths, chosen automatically:
   legacy `.../steam/apps/{id}/library_600x900.jpg` path 404s for some titles (adult /
   region-restricted content in practice). When the configured country hides a game's assets
   entirely (adult content under `cc=cn`), the client retries that chunk with `cc=us`. Poster
-  failures are logged, never surfaced as enrichment errors: the poster is a nice-to-have.
+  failures are logged, never surfaced as enrichment errors, and never overwrite a previously
+  stored poster: without a fresh asset URL the incoming value is `None`, which the merge treats
+  as "keep the local value".
 - `reqwest` errors are redacted with `without_url()` before they reach logs, `import_runs` or
   API responses: the official URL carries `?key=…`.
 - From mainland China, both `store.steampowered.com` and `api.steampowered.com` need a proxy.
