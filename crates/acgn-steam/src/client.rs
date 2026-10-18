@@ -529,45 +529,49 @@ impl SteamClient {
     /// 只有横版 header。海报属于锦上添花：失败只记日志，不影响元数据主流程。
     ///
     /// 拿不到新地址时把 `poster_url` 置 `None`，而不是留着旧式模板：合并对 `None`
-    /// 保留本地值（`take_authoritative`），已存过的好海报不会被一次资产接口故障覆盖；
+    /// 保留本地值（`take_authoritative`），已存过的好海报不会被一次接口故障覆盖；
     /// 首次补全的条目该次没有海报，交给前端封面兜底。
     async fn fill_poster_assets(&self, items: &mut [SourceItem]) {
         if items.is_empty() {
             return;
         }
         let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
-        match self.store_library_capsules(&appids).await {
-            Ok(capsules) => {
-                for item in items.iter_mut() {
-                    item.poster_url = capsules.get(&item.external_id).cloned();
-                }
-            }
-            Err(err) => {
-                warn!(error = %err, "竖版海报补全失败（保留已存海报，不影响其余元数据）");
-                for item in items.iter_mut() {
-                    item.poster_url = None;
-                }
-            }
+        let capsules = self.store_library_capsules(&appids).await;
+        for item in items.iter_mut() {
+            item.poster_url = capsules.get(&item.external_id).cloned();
         }
     }
 
-    /// 取一批 appid 的竖版海报 URL。先配置国家；整批拿不到的再切 `us` 重试——
-    /// 国区上下文会把成人内容的 assets 整个隐藏，而不是逐条报错。
-    async fn store_library_capsules(&self, appids: &[String]) -> Result<HashMap<String, String>> {
+    /// 取一批 appid 的竖版海报 URL（尽力而为：单个分块失败只记日志，返回已取到的部分）。
+    ///
+    /// 先配置国家；整块拿不到的再切 `us` 重试——国区上下文会把成人内容的 assets
+    /// 整个隐藏，而不是逐条报错。任意一次请求失败都不能作废已取到的结果。
+    async fn store_library_capsules(&self, appids: &[String]) -> HashMap<String, String> {
         let mut capsules = HashMap::new();
         let chunk_count = appids.len().div_ceil(STORE_ITEMS_CHUNK);
         for (index, chunk) in appids.chunks(STORE_ITEMS_CHUNK).enumerate() {
-            let primary = self
+            match self
                 .store_items_for_country(chunk, &self.config.country)
-                .await?;
-            let missing = fallback_candidates(chunk, &primary, &self.config.country);
-            capsules.extend(primary);
+                .await
+            {
+                Ok(primary) => {
+                    let missing = fallback_candidates(chunk, &primary, &self.config.country);
+                    capsules.extend(primary);
 
-            if !missing.is_empty() {
-                capsules.extend(
-                    self.store_items_for_country(&missing, FALLBACK_COUNTRY)
-                        .await?,
-                );
+                    if !missing.is_empty() {
+                        // 回退失败只损失缺的这几条：主国家结果照常保留
+                        match self
+                            .store_items_for_country(&missing, FALLBACK_COUNTRY)
+                            .await
+                        {
+                            Ok(fallback) => capsules.extend(fallback),
+                            Err(err) => {
+                                warn!(error = %err, "竖版海报换区重试失败（保留主国家结果）")
+                            }
+                        }
+                    }
+                }
+                Err(err) => warn!(error = %err, "竖版海报请求失败（跳过该批）"),
             }
 
             // 与 appdetails 一样按节流间隔排队（只在还有下一块时等待），
@@ -576,7 +580,7 @@ impl SteamClient {
                 tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
             }
         }
-        Ok(capsules)
+        capsules
     }
 
     async fn store_items_for_country(
