@@ -314,13 +314,15 @@ impl AchievementProgress {
 /// 一次成就同步的结果汇总。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AchievementSyncSummary {
-    /// 本次实际检查的条目数
+    /// 本次拿到成就数据的条目数（该账号确实拥有且有统计）
     pub checked: i64,
     /// 因「全成就」被标记为已通关的条数
     pub promoted: i64,
-    /// 检查了但没有变化（进度不满 / 没有成就集）
+    /// 拿到数据但没有变化（进度不满 / 没有成就集）
     pub unchanged: i64,
-    /// 取不到成就数据（未拥有该游戏 / 隐私 / 接口不可用）
+    /// 该账号没有这个游戏（未拥有 / 隐私）：取不到进度，只刷新了检查时间
+    pub unavailable: i64,
+    /// 请求失败（网络 / 接口异常），下次会重试
     pub failed: i64,
     /// 本轮结束后仍未检查过的条目数（再点一次继续）
     pub pending: i64,

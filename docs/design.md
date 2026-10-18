@@ -241,11 +241,12 @@ Three paths, chosen automatically:
   (GET → 405, GET-style POST → 411/401, JSON body → 401). So the check is a separate on-demand
   action (`POST /api/imports/steam/achievements`, run mode `steam_achievements`), not part of
   every library sync.
-- Three response shapes are distinguished: `success: true` + achievements (progress),
-  `success: true` without the array (the game has no achievement set → `0/0`), and
-  `success: false` ("Profile is not public" — not owned or hidden → no data). Only the first
-  two are treated as an answer; `failed` entries keep their previous progress and still advance
-  the polling clock so they cannot block the queue.
+- Three response shapes are distinguished (the HTTP status is not the signal — 400/403 carry
+  a JSON answer): `success: true` + achievements (progress), `success: true` without the array
+  (the game has no achievement set → `0/0`), `error: "Requested app has no stats"` (HTTP 400 →
+  also `0/0`), and `error: "Profile is not public"` (HTTP 403 — not owned or hidden → no data).
+  Only the last one is treated as unavailable; such entries keep their previous progress and
+  still advance the polling clock so they cannot block the queue.
 - Poll order is `achievements_checked_at` null-first, then oldest-first (rotating refreshes),
   and the response reports `pending` (never checked) so the UI can offer "click again to
   continue". Checking is paced at 3 concurrent + a 150 ms gap (~10 games/s); HTTP 429 stops the

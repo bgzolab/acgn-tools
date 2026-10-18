@@ -420,24 +420,33 @@ impl SteamClient {
             .net()?;
 
         let status = response.status();
-        if matches!(status.as_u16(), 401 | 403) {
-            return Err(Error::rejected(
-                "Steam 拒绝了成就请求：API Key 无效或已过期（到 https://steamcommunity.com/dev/apikey 重新申请）",
-            ));
-        }
         if status.as_u16() == 429 {
             return Err(Error::rejected(
                 "GetPlayerAchievements 触发限流（HTTP 429），请稍后再试",
             ));
         }
-        if !status.is_success() {
-            return Err(Error::rejected(format!(
-                "GetPlayerAchievements 返回 HTTP {status}"
-            )));
+
+        // 400（该游戏没有统计）/ 403（未拥有、隐私）都会带可解析的 JSON 答案，
+        // 所以先把 body 当载荷解析；只有「不是 JSON」时才按状态码报错。
+        let body = response.text().await.net()?;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+            return Ok(parse_player_achievements(&value));
         }
 
-        let value: serde_json::Value = response.json().await.net()?;
-        Ok(parse_player_achievements(&value))
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(Error::rejected(
+                "Steam 拒绝了成就请求：API Key 无效或已过期（到 https://steamcommunity.com/dev/apikey 重新申请）",
+            ));
+        }
+        if !status.is_success() {
+            return Err(Error::rejected(format!(
+                "GetPlayerAchievements 返回 HTTP {status}（响应不是 JSON）"
+            )));
+        }
+        Err(Error::upstream(format!(
+            "成就响应解析失败（前 80 字符: {}）",
+            body.chars().take(80).collect::<String>()
+        )))
     }
 
     /// 公开接口：分页拉取 `wishlistdata`，按 appid 去重。

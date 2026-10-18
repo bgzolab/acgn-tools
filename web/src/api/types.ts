@@ -203,11 +203,14 @@ export interface EnrichSummary {
 
 /** 成就同步（`POST /api/imports/steam/achievements`）的结果 */
 export interface AchievementSyncSummary {
+  /** 本次拿到成就数据的条目数（该账号确实拥有且有统计） */
   checked: number;
   /** 因「全成就」被标记为已通关的条数 */
   promoted: number;
   unchanged: number;
-  /** 取不到成就数据（未拥有 / 隐私）的条数 */
+  /** 该账号没有这个游戏（未拥有 / 隐私）：只刷新了检查时间 */
+  unavailable: number;
+  /** 请求失败（网络 / 接口异常），再点一次会重试 */
   failed: number;
   /** 仍未检查过的条目数（再点一次继续） */
   pending: number;

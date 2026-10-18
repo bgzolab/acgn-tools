@@ -138,10 +138,11 @@ pub async fn import_steam_library(
     }))
 }
 
-/// 成就检查的并发与节流。`GetPlayerAchievements` 的限额比 appdetails 宽松得多，
-/// 3 并发 + 150ms 间隔大约每秒 10 个游戏，一次性检查整库（几百个）只需十几秒。
-const ACHIEVEMENTS_CONCURRENCY: usize = 3;
-const ACHIEVEMENTS_DELAY_MS: u64 = 150;
+/// 成就检查的并发与节流：2 并发 + 250ms 间隔 ≈ 每秒 8 个游戏，
+/// 一次性检查整库（几百个）只需十几秒到一分钟。`GetPlayerAchievements` 的限额比
+/// appdetails 宽松，但偶发 401/拒绝（实测出现过一次），所以不追求更快。
+const ACHIEVEMENTS_CONCURRENCY: usize = 2;
+const ACHIEVEMENTS_DELAY_MS: u64 = 250;
 
 /// POST /api/imports/steam/achievements —— 检查成就进度（全成就 → 已通关）。
 ///
@@ -171,6 +172,7 @@ pub async fn sync_steam_achievements(
             checked: 0,
             promoted: 0,
             unchanged: 0,
+            unavailable: 0,
             failed: 0,
             pending: 0,
             source_mode: state.steam.mode().to_string(),
@@ -183,6 +185,7 @@ pub async fn sync_steam_achievements(
     let mut checked = 0i64;
     let mut promoted = 0i64;
     let mut unchanged = 0i64;
+    let mut unavailable = 0i64;
     let mut failed = 0i64;
     let mut last_error: Option<Error> = None;
     let mut failure_samples: Vec<String> = Vec::new();
@@ -203,15 +206,18 @@ pub async fn sync_steam_achievements(
         for (entry, result) in results {
             match result {
                 Ok(progress) => {
-                    checked += 1;
                     let outcome = state
                         .db
                         .update_achievements(entry.game_id, progress, now)
                         .await?;
-                    if outcome.promoted {
-                        promoted += 1;
-                    } else {
-                        unchanged += 1;
+                    match (progress, outcome.promoted) {
+                        (Some(_), true) => promoted += 1,
+                        (Some(_), false) => unchanged += 1,
+                        // 未拥有 / 隐私：取不到进度，只刷新了检查时间
+                        (None, _) => unavailable += 1,
+                    }
+                    if progress.is_some() {
+                        checked += 1;
                     }
                 }
                 Err(err) => {
@@ -236,8 +242,9 @@ pub async fn sync_steam_achievements(
     }
 
     // 全部失败时直接返回错误（与 enrich 同款处理）：让用户看到「稍后重试」，
-    // 而不是一个 0 成功的 200。
+    // 而不是一个 0 成功的 200。（unavailable 是正常回答，不算失败。）
     if checked == 0
+        && unavailable == 0
         && let Some(err) = last_error
     {
         return Err(ApiError(err));
@@ -247,8 +254,7 @@ pub async fn sync_steam_achievements(
     warnings.extend(failure_samples);
     if failed > sample_count {
         warnings.push(format!(
-            "共 {} 个条目取不到成就数据（未拥有 / 隐私设置），已跳过",
-            failed
+            "共 {failed} 个条目请求失败（网络或接口异常），再点一次会重试"
         ));
     }
     if promoted > 0 {
@@ -276,11 +282,11 @@ pub async fn sync_steam_achievements(
         .finish_run_ok(
             run_id,
             RunCounts {
-                seen: checked + failed,
+                seen: checked + unavailable + failed,
                 added: 0,
                 updated: promoted,
                 unchanged,
-                skipped: failed,
+                skipped: unavailable + failed,
                 missing: 0,
             },
             &warnings,
@@ -292,6 +298,7 @@ pub async fn sync_steam_achievements(
         checked,
         promoted,
         unchanged,
+        unavailable,
         failed,
         pending: pending_after,
         source_mode: state.steam.mode().to_string(),
