@@ -98,8 +98,8 @@ just fixture    # regenerate the bundled sample data (this one hits the network)
 ```
 
 The quality gates are `cargo fmt --all --check`,
-`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` and
-`cd web && pnpm typecheck && pnpm build`.
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`
+and `cd web && pnpm typecheck && pnpm build`.
 The [`ci` workflow](.github/workflows/ci.yml) runs all of them on every pull request (including
 drafts); `opencode-review` waits for that workflow to succeed and does not re-run the gates
 itself. [`AGENTS.md`](AGENTS.md) lists every command and convention.

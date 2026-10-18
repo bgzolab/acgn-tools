@@ -17,8 +17,9 @@ jobs:
   quality-gates:
     if: github.event.pull_request.user.login == 'bgzo' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    # 冷缓存下 Rust 编译 + 测试的最坏情况；超时后明确失败，而不是无限等待
-    timeout-minutes: 40
+    # 看到 ci run 后等待窗口会按 ci 的最长执行时间延展（最多 42 分钟）；
+    # job 上限 45 分钟，保证循环超时前能打印明确错误而不是被中途取消
+    timeout-minutes: 45
     permissions:
       # 查询 ci workflow run 需要 actions: read
       actions: read
@@ -31,12 +32,18 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 35 分钟轮询预算（job 上限 40 分钟，留出收尾时间）
-          deadline=$((SECONDS + 35 * 60))
           # ci run 一般几秒内就会出现；5 分钟还看不到通常是 PR 还没有 ci.yml
-          # （旧 PR 未 rebase 到含 CI 的 main），提前失败比空等 35 分钟更清楚
+          # （旧 PR 未 rebase 到含 CI 的 main），提前失败比空等更清楚
           no_run_deadline=$((SECONDS + 5 * 60))
+          # 硬上限：job 是 45 分钟，循环最多到 42 分钟，留出收尾时间
+          hard_deadline=$((SECONDS + 42 * 60))
+          deadline=$hard_deadline
+          # 一旦见过 run，就只在硬上限处超时；no_run_deadline 只用于「从未见过 run」，
+          # 避免把瞬态查询失败误判成「run 不存在」而虚假失败
+          seen_run=false
           last_state=""
+          query_err_file="$(mktemp)"
+          trap 'rm -f "${query_err_file}"' EXIT
 
           # 只看与本次审查由同一事件触发的 ci run：ready_for_review 会重新触发 ci，
           # draft 阶段成功/失败的旧 run 不能算数；同一事件下两个 workflow run 的
@@ -55,11 +62,15 @@ jobs:
 
           while :; do
             runs=""
+            query_error=""
             # 必须显式 --method GET：gh api 带 -f 参数时默认改用 POST，
-            # 而 actions/runs 只有 GET，POST 会 404（会被静默忽略并等到超时）。
+            # 而 actions/runs 只有 GET，POST 会 404。
+            # stderr 单独落盘：成功后混进 stdout 会破坏 jq 解析。
             if ! runs=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs" \
-              -f head_sha="${HEAD_SHA}" -f event=pull_request -f per_page=50 2>/dev/null); then
-              echo "::warning::failed to query workflow runs; retrying"
+              -f head_sha="${HEAD_SHA}" -f event=pull_request -f per_page=50 2>"${query_err_file}"); then
+              query_error="$(head -c 200 "${query_err_file}" | tr '\n' ' ')"
+              runs=""
+              echo "::warning::failed to query workflow runs; retrying: ${query_error}"
             fi
 
             run=""
@@ -69,7 +80,7 @@ jobs:
               # 不用 workflows/ci.yml/runs 端点：PR 首次引入 ci.yml 时该文件还不在默认分支上。
               # 字段顺序把 URL 放在空 conclusion 之前：read 的 IFS 是 tab（空白符），
               # 连续 tab 会被折叠，空字段放中间会把 URL 错位吞掉。
-              run=$(jq -r --argjson cutoff "${cutoff}" '
+              if ! run=$(jq -r --argjson cutoff "${cutoff}" '
                 [.workflow_runs[]
                  | select(.path == ".github/workflows/ci.yml")
                  | select((.created_at | fromdateiso8601) >= $cutoff)]
@@ -78,10 +89,24 @@ jobs:
                 | select(. != null)
                 | [.id, .status, .html_url, (.conclusion // "")]
                 | @tsv
-              ' <<<"${runs}")
+              ' <<<"${runs}"); then
+                query_error="invalid JSON from the workflow runs endpoint"
+                echo "::warning::failed to parse the workflow runs response; retrying"
+                run=""
+              fi
             fi
 
             if [ -n "${run}" ]; then
+              if [ "${seen_run}" != "true" ]; then
+                seen_run=true
+                # 看到 run 后按 ci backend 的 30 分钟上限 + 2 分钟缓冲延展等待，
+                # 但不越过硬上限
+                candidate=$((SECONDS + 32 * 60))
+                if [ "${candidate}" -lt "${hard_deadline}" ]; then
+                  deadline="${candidate}"
+                fi
+              fi
+
               IFS=$'\t' read -r run_id status run_url conclusion <<<"${run}"
               state="${status}/${conclusion}"
               if [ "${state}" != "${last_state}" ]; then
@@ -103,14 +128,15 @@ jobs:
                 echo "::error::ci workflow concluded '${conclusion}'. Fix the checks before the opencode review can run: ${run_url}" >&2
                 exit 1
               fi
-            elif [ "${last_state}" != "missing" ]; then
-              # ci run 尚未创建（workflow 刚触发时 API 可能还没返回），继续等
+            # 只有查询成功且确实没有匹配的 ci run 时才进入 missing；
+            # 查询失败时保留原状态，避免把瞬态抖动误判成「run 不存在」
+            elif [ -z "${query_error}" ] && [ "${last_state}" != "missing" ]; then
               echo "Waiting for a ci workflow run for ${HEAD_SHA}..."
               last_state="missing"
             fi
 
-            if [ "${last_state}" = "missing" ] && [ "${SECONDS}" -ge "${no_run_deadline}" ]; then
-              echo "::error::No ci workflow run appeared for ${HEAD_SHA} within 5 minutes. Push a new commit or rebase this PR onto main so the ci workflow is triggered." >&2
+            if [ "${seen_run}" != "true" ] && [ "${SECONDS}" -ge "${no_run_deadline}" ]; then
+              echo "::error::No ci workflow run appeared for ${HEAD_SHA} within 5 minutes (the actions API may also have been unavailable). Push a new commit or rebase this PR onto main so the ci workflow is triggered." >&2
               exit 1
             fi
 
@@ -151,9 +177,9 @@ jobs:
         Review this PR. Focus on issues, not on evaluating the PR itself.
 
         The `ci` workflow has already run the repository quality gates for this commit
-        (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-        `cargo test --workspace`, `pnpm typecheck`, and a production build) and passed before
-        this review started. Do not re-run the full gates; trust that result. Only run a
+        (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+        `cargo test --workspace --locked`, `pnpm typecheck`, and a production build) and passed
+        before this review started. Do not re-run the full gates; trust that result. Only run a
         targeted command when it is essential to confirm a specific suspected defect.
 
         Find correctness, regression, security, robustness, maintainability, and test issues. Also suggest meaningful improvements.

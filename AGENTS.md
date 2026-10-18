@@ -61,8 +61,8 @@ cd web && pnpm install && pnpm dev
 
 # quality gates — all four must pass before you push
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 cd web && pnpm typecheck && pnpm build
 
 # CI runs the same gates on every PR (.github/workflows/ci.yml);
@@ -200,7 +200,8 @@ Operational notes:
 
 A change is ready when all of the following hold:
 
-1. `cargo fmt`, `cargo clippy … -D warnings`, `cargo test --workspace`, `pnpm typecheck && pnpm build` pass.
+1. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+   `cargo test --workspace --locked`, `pnpm typecheck && pnpm build` pass.
    The same gates run in the `ci` workflow; `opencode-review` starts only after they pass.
 2. New behaviour is covered by a test, or the PR explains why it cannot be.
 3. Sync semantics / API / env-var docs are updated when they changed (`README.md`, `docs/api.http`, this file).
