@@ -336,6 +336,25 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           </div>
         </div>
 
+        <div v-if="entry.achievements_total !== null" class="field">
+          <span class="label">成就</span>
+          <div class="hint">
+            <template v-if="entry.achievements_total === 0">该游戏没有成就</template>
+            <template v-else>
+              {{ entry.achievements_achieved ?? 0 }} / {{ entry.achievements_total }}
+              <span
+                v-if="(entry.achievements_achieved ?? 0) >= entry.achievements_total"
+                class="badge ok"
+                style="margin-left: 4px"
+                >全成就</span
+              >
+            </template>
+            <span class="hint" style="margin-left: 6px">
+              （检查于 {{ relativeTime(entry.achievements_checked_at) }}）
+            </span>
+          </div>
+        </div>
+
         <div class="field">
           <label class="label" for="note">备注</label>
           <textarea id="note" v-model="noteDraft" class="textarea" placeholder="为什么想玩 / 卡在哪了 / 通关感想…" />

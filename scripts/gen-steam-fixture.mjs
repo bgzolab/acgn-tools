@@ -5,12 +5,13 @@
  * 数据来源（公开接口，不需要 API Key）：
  *   - appreviews  → 好评档位 / 好评数（真实）
  *   - appdetails  → 中英文名 / 价格 / 简介 / 发售日 / 平台（真实）
- *   - library.json 的累计时长是脚本**确定性生成**的演示数据（GetOwnedGames 需要
- *     API Key 与真实账号，仓库里不能放任何人的真实库存），名字来自 appdetails。
+ *   - library.json / achievements.json 的时长与成就是脚本**确定性生成**的演示数据
+ *     （GetOwnedGames / GetPlayerAchievements 需要 API Key 与真实账号，
+ *     仓库里不能放任何人的真实库存），名字来自 appdetails。
  *
  * 用法：
  *   node scripts/gen-steam-fixture.mjs                 # 生成到 fixtures/steam/
- *   node scripts/gen-steam-fixture.mjs --library-only  # 只用现有 wishlist.json 生成 library.json（不联网）
+ *   node scripts/gen-steam-fixture.mjs --library-only  # 只用现有 wishlist.json 生成 library/achievements（不联网）
  *   node scripts/gen-steam-fixture.mjs --out /tmp/steam
  *
  * 注意：除 `--library-only` 外脚本会真的访问 Steam，请确保网络通畅（国内需要走代理）。
@@ -68,7 +69,7 @@ function demoPlaytime(index) {
 
 /**
  * 从 wishlist 生成 GetOwnedGames 形态的 library.json。
- * 时长是演示数据；条目标记「已拥有」，导入后会落到「待玩」。
+ * 时长是演示数据；条目标记「已拥有」，导入后会按「有时长 = 在玩」处理。
  */
 function buildLibraryFile(wishlist) {
   const now = Math.floor(Date.now() / 1000);
@@ -95,6 +96,27 @@ function buildLibraryFile(wishlist) {
   };
 }
 
+/**
+ * 从 library 生成 achievements.json（GetPlayerAchievements 的汇总形态）。
+ * 只给「玩过」的游戏生成：每 3 个玩过的游戏里 1 个全成就，其余部分进度。
+ */
+function buildAchievementsFile(libraryFile) {
+  const achievements = {};
+  let played = 0;
+  for (const game of libraryFile.response.games) {
+    if (!game.playtime_forever) continue;
+    const total = 12 + ((played * 7) % 30);
+    const achieved =
+      played % 3 === 0 ? total : Math.floor((total * ((played % 5) + 1)) / 6);
+    achievements[String(game.appid)] = { achieved, total };
+    played += 1;
+  }
+  return {
+    note: "样例数据：成就进度由 scripts/gen-steam-fixture.mjs 确定性生成（演示用，不是真实账号数据）",
+    achievements,
+  };
+}
+
 async function writeLibraryFile(wishlist) {
   const libraryFile = buildLibraryFile(wishlist);
   await writeFile(
@@ -102,7 +124,16 @@ async function writeLibraryFile(wishlist) {
     `${JSON.stringify(libraryFile, null, 2)}\n`,
     "utf8",
   );
-  console.log(`✔ library.json：${libraryFile.response.game_count} 条（演示时长）`);
+  const achievementsFile = buildAchievementsFile(libraryFile);
+  await writeFile(
+    path.join(OUT_DIR, "achievements.json"),
+    `${JSON.stringify(achievementsFile, null, 2)}\n`,
+    "utf8",
+  );
+  console.log(
+    `✔ library.json：${libraryFile.response.game_count} 条（演示时长）；` +
+      `achievements.json：${Object.keys(achievementsFile.achievements).length} 条（演示成就）`,
+  );
 }
 
 async function getJson(url, attempt = 1) {

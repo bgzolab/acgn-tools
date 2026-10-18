@@ -52,6 +52,7 @@ Metadata follows the source; personal state follows the local database — see
 | POST | `/api/games/{id}/refresh-metadata` | Re-fetch store details for a single entry |
 | POST | `/api/imports/steam/wishlist` | Import a Steam wishlist |
 | POST | `/api/imports/steam/library` | Import the Steam library (owned games + playtime; requires `STEAM_API_KEY`) |
+| POST | `/api/imports/steam/achievements` | Check achievement progress (all achievements → completed; per-game lookups) |
 | POST | `/api/imports` | Generic JSON import (flat `SourceItem`s, merge semantics) |
 | POST | `/api/imports/restore` | Restore a backup (the export document verbatim, file wins) |
 | GET | `/api/imports` | Run history (`?limit=`) |
@@ -144,6 +145,36 @@ the wishlist import:
   imported. `playtime_2weeks` / `rtime_last_played` may also be absent unless the profile is
   the API key's owner; they are optional fields.
 
+### POST /api/imports/steam/achievements
+
+Checks achievement progress, one game per request, and marks games with **all achievements**
+as `completed`:
+
+```json
+{ "steam_id": "bgzocn", "limit": 200 }
+```
+
+- Requires `STEAM_API_KEY` and a public "Game details" setting (same as the library import).
+  `limit` defaults to 200 (max 500) — the response's `pending` tells you how many entries were
+  never checked; call again to continue.
+- Only owned entries (`source_playtime_minutes` non-null) are checked. Poll order is
+  never-checked first, then the least-recently checked, so refreshes rotate.
+- Status rules: `wishlist` / `backlog` / `playing` are promoted to `completed` (filling
+  `finished_at` and 100% progress when empty); a user-set `completed` / `on_hold` / `dropped` /
+  `ignored` is never reverted. Games without an achievement set stay untouched.
+- Per-entry progress is stored in `entry.achievements_achieved` / `achievements_total` and
+  `achievements_checked_at`; entries whose achievements cannot be read (not owned / private)
+  keep their previous values and still advance the polling clock.
+- Response:
+
+```json
+{ "checked": 84, "promoted": 6, "unchanged": 60, "failed": 18, "pending": 0,
+  "source_mode": "live_with_key", "duration_ms": 9123, "warnings": ["6 个游戏全成就，已标记为「已通关」"] }
+```
+
+- Recorded in the run history as `steam_achievements`. If nothing succeeds (rate limit / bad
+  key) the request fails with `422` like the enrich endpoint.
+
 ### POST /api/imports
 
 Accepts flat `SourceItem`s — the shape a new source adapter produces:
@@ -209,7 +240,7 @@ page as 502.
 ### GET /api/export/json
 
 ```json
-{ "exported_at": "…", "app": "acgn-tools", "schema_revision": 2, "count": 27, "items": [ … ] }
+{ "exported_at": "…", "app": "acgn-tools", "schema_revision": 3, "count": 27, "items": [ … ] }
 ```
 
 Each element is `{ "game": …, "entry": … }`: full metadata plus personal state. The document is

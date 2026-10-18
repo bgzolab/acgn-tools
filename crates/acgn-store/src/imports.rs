@@ -721,6 +721,9 @@ fn plan_restore(
         progress_percent: None,
         playtime_minutes: None,
         source_playtime_minutes: None,
+        achievements_achieved: None,
+        achievements_total: None,
+        achievements_checked_at: None,
         note: None,
         source_added_at: None,
         started_at: None,
@@ -1155,6 +1158,10 @@ fn new_entry(game_id: i64, item: &SourceItem, now: DateTime<Utc>) -> LibraryEntr
         // 新条目尚不存在「本地手填值」：有效时长直接跟随来源
         playtime_minutes: item.playtime_minutes,
         source_playtime_minutes: item.playtime_minutes,
+        // 成就进度由独立的成就同步写入，导入时保持未知
+        achievements_achieved: None,
+        achievements_total: None,
+        achievements_checked_at: None,
         note: None,
         source_added_at: item.source_added_at,
         started_at: None,
@@ -1318,9 +1325,10 @@ async fn insert_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     sqlx::query(
         "INSERT INTO library_entries (
             game_id, status, priority, favorite, rating, progress_percent, playtime_minutes,
-            source_playtime_minutes, note, source_added_at, started_at, finished_at,
+            source_playtime_minutes, achievements_achieved, achievements_total,
+            achievements_checked_at, note, source_added_at, started_at, finished_at,
             last_synced_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(entry.game_id)
     .bind(entry.status.as_str())
@@ -1330,6 +1338,9 @@ async fn insert_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     .bind(entry.progress_percent)
     .bind(entry.playtime_minutes)
     .bind(entry.source_playtime_minutes)
+    .bind(entry.achievements_achieved)
+    .bind(entry.achievements_total)
+    .bind(entry.achievements_checked_at)
     .bind(entry.note.clone())
     .bind(entry.source_added_at)
     .bind(entry.started_at)
@@ -1347,8 +1358,10 @@ async fn update_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     sqlx::query(
         "UPDATE library_entries SET
             status = ?, priority = ?, favorite = ?, rating = ?, progress_percent = ?,
-            playtime_minutes = ?, source_playtime_minutes = ?, note = ?, source_added_at = ?,
-            started_at = ?, finished_at = ?, last_synced_at = ?, updated_at = ?
+            playtime_minutes = ?, source_playtime_minutes = ?,
+            achievements_achieved = ?, achievements_total = ?, achievements_checked_at = ?,
+            note = ?, source_added_at = ?, started_at = ?, finished_at = ?,
+            last_synced_at = ?, updated_at = ?
          WHERE game_id = ?",
     )
     .bind(entry.status.as_str())
@@ -1358,6 +1371,9 @@ async fn update_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     .bind(entry.progress_percent)
     .bind(entry.playtime_minutes)
     .bind(entry.source_playtime_minutes)
+    .bind(entry.achievements_achieved)
+    .bind(entry.achievements_total)
+    .bind(entry.achievements_checked_at)
     .bind(entry.note.clone())
     .bind(entry.source_added_at)
     .bind(entry.started_at)

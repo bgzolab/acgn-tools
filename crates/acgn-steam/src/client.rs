@@ -9,11 +9,12 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use acgn_core::{Error, Result, SourceItem};
+use acgn_core::{AchievementProgress, Error, Result, SourceItem};
 use futures::future::join_all;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use tracing::{debug, warn};
 
+use crate::achievements::parse_player_achievements;
 use crate::appdetails::parse_app_details;
 use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
 use crate::config::SteamConfig;
@@ -22,8 +23,8 @@ use crate::library::{OwnedGamesPayload, owned_game_to_source_item};
 use crate::util::extract_xml_tag;
 use crate::wishlist::{WishlistPayload, wishlist_to_source_item};
 use crate::{
-    app_details_url, official_wishlist_url, owned_games_url, public_wishlist_url,
-    vanity_resolve_url,
+    app_details_url, official_wishlist_url, owned_games_url, player_achievements_url,
+    public_wishlist_url, vanity_resolve_url,
 };
 
 /// 愿望单最多翻多少页（每页约 100 条，足够 6000 个愿望）。
@@ -376,6 +377,67 @@ impl SteamClient {
             source_mode: "official_api",
             resolved_via,
         })
+    }
+
+    /// 抓单个游戏的成就进度（`ISteamUserStats/GetPlayerAchievements`）。
+    ///
+    /// 返回三态：
+    /// * `Ok(Some(progress))`：接口明确回答（`total = 0` = 该游戏没有成就集）；
+    /// * `Ok(None)`：取不到（未拥有 / 隐私），调用方只刷新检查时间；
+    /// * `Err(SourceRejected)`：限流或 Key 无效，调用方应停止本轮。
+    pub async fn fetch_player_achievements(
+        &self,
+        steam_id: &str,
+        appid: &str,
+    ) -> Result<Option<AchievementProgress>> {
+        if let Some(fixture) = &self.fixture {
+            if fixture
+                .achievements_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
+            {
+                return Ok(fixture.achievement(appid));
+            }
+            return Err(Error::rejected(
+                "离线 fixture 未提供 achievements.json：无法演示成就同步（重新生成 fixture 或改用真实网络）",
+            ));
+        }
+
+        let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) else {
+            return Err(Error::invalid(
+                "同步成就需要 API Key（官方 GetPlayerAchievements 接口不接受匿名调用）：\
+                 请设置 STEAM_API_KEY 后重启服务",
+            ));
+        };
+
+        let url = player_achievements_url(api_key, steam_id, appid, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(Error::rejected(
+                "Steam 拒绝了成就请求：API Key 无效或已过期（到 https://steamcommunity.com/dev/apikey 重新申请）",
+            ));
+        }
+        if status.as_u16() == 429 {
+            return Err(Error::rejected(
+                "GetPlayerAchievements 触发限流（HTTP 429），请稍后再试",
+            ));
+        }
+        if !status.is_success() {
+            return Err(Error::rejected(format!(
+                "GetPlayerAchievements 返回 HTTP {status}"
+            )));
+        }
+
+        let value: serde_json::Value = response.json().await.net()?;
+        Ok(parse_player_achievements(&value))
     }
 
     /// 公开接口：分页拉取 `wishlistdata`，按 appid 去重。

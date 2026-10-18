@@ -295,6 +295,40 @@ pub struct MoneyBucket {
     pub item_count: i64,
 }
 
+/// 单个游戏的成就进度（Steam `GetPlayerAchievements` 的汇总）。
+///
+/// `total = 0` 表示这个游戏没有成就集（不是「取不到」——取不到用 `None` 表达）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AchievementProgress {
+    pub achieved: i64,
+    pub total: i64,
+}
+
+impl AchievementProgress {
+    /// 是否全成就（`total > 0` 且全部达成）。
+    pub fn is_complete(&self) -> bool {
+        self.total > 0 && self.achieved >= self.total
+    }
+}
+
+/// 一次成就同步的结果汇总。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AchievementSyncSummary {
+    /// 本次实际检查的条目数
+    pub checked: i64,
+    /// 因「全成就」被标记为已通关的条数
+    pub promoted: i64,
+    /// 检查了但没有变化（进度不满 / 没有成就集）
+    pub unchanged: i64,
+    /// 取不到成就数据（未拥有该游戏 / 隐私 / 接口不可用）
+    pub failed: i64,
+    /// 本轮结束后仍未检查过的条目数（再点一次继续）
+    pub pending: i64,
+    pub source_mode: String,
+    pub duration_ms: i64,
+    pub warnings: Vec<String>,
+}
+
 /// 元数据补全的结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EnrichSummary {

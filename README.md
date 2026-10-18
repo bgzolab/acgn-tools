@@ -21,6 +21,8 @@ library, enrich it with store metadata, and keep track of what you actually play
 - **Steam library sync** — owned games come in with their cumulative playtime; played ones
   count as *playing*, untouched ones as *backlog*. Needs `STEAM_API_KEY` (Steam's
   `GetOwnedGames` endpoint refuses anonymous calls) and a public "Game details" privacy setting
+- **Achievement check** — per-game achievement progress; a game with all achievements is
+  marked *completed* automatically, while a status you set yourself is never reverted
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
   discount, release date and the vertical library poster, fetched on demand
 - **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
@@ -47,6 +49,9 @@ library, enrich it with store metadata, and keep track of what you actually play
   ([design.md §4.5](docs/design.md#45-playtime-source-tracked-overridden-locally)).
 - An owned game with playtime is imported as *playing* (never played: *backlog*); wishlist and
   backlog entries follow the source once, while a status you set yourself is never reverted.
+- The achievement check (a separate action) marks a game with all achievements as *completed*;
+  `completed` / `on_hold` / `dropped` / `ignored` stay untouched, and so does a manual
+  `playing` unless the game actually has all achievements.
 - Items that disappear from a source are only reported (`missing`), never deleted;
   re-importing unchanged data reports `unchanged` and writes nothing.
 

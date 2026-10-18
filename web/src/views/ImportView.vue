@@ -2,8 +2,8 @@
 /** 导入与同步：Steam 愿望单 / 库存、离线 JSON、元数据补全、历史记录。 */
 import { computed, onMounted, ref } from "vue";
 
-import { enrich, importJson, importSteamLibrary, importSteamWishlist, listRuns, restoreJson } from "../api";
-import type { EnrichSummary, ImportResponse, ImportRun } from "../api/types";
+import { enrich, importJson, importSteamLibrary, importSteamWishlist, listRuns, restoreJson, syncSteamAchievements } from "../api";
+import type { AchievementSyncSummary, EnrichSummary, ImportResponse, ImportRun } from "../api/types";
 import GameCard from "../components/GameCard.vue";
 import { formatDateTime, relativeTime } from "../composables/format";
 import { errorText, pushToast } from "../composables/toast";
@@ -67,6 +67,40 @@ async function runSteam(kind: "wishlist" | "library", dryRun: boolean) {
     pushToast("err", title, message);
   } finally {
     running.value = null;
+  }
+}
+
+// ---------------------------------------------------------------- 成就同步
+const achievementLimit = ref(200);
+const achievementRunning = ref(false);
+const achievementResult = ref<AchievementSyncSummary | null>(null);
+
+async function runAchievements() {
+  const input = steamId.value.trim();
+  if (!input) {
+    pushToast("warn", "请先填写 SteamID", "成就是「某个账号的进度」，需要先填 SteamID");
+    return;
+  }
+
+  achievementRunning.value = true;
+  try {
+    const summary = await syncSteamAchievements({
+      steam_id: input,
+      limit: achievementLimit.value,
+    });
+    achievementResult.value = summary;
+    pushToast(
+      summary.promoted > 0 ? "ok" : "warn",
+      summary.promoted > 0 ? "成就检查完成" : "成就检查完成（没有新全成就）",
+      `检查 ${summary.checked} · 全成就升级 ${summary.promoted} · 未变化 ${summary.unchanged} · 取不到 ${summary.failed}` +
+        (summary.pending > 0 ? ` · 还剩 ${summary.pending} 个` : ""),
+    );
+    await loadHistory();
+  } catch (error) {
+    const { title, message } = errorText(error);
+    pushToast("err", title, message);
+  } finally {
+    achievementRunning.value = false;
   }
 }
 
@@ -290,6 +324,46 @@ onMounted(() => {
             ⚠ 未检测到 STEAM_API_KEY：愿望单导入不受影响；库存接口不接受匿名调用
           </div>
         </div>
+
+        <div class="divider" />
+
+        <div class="field">
+          <span class="label">成就检查（全成就 → 已通关）</span>
+          <div class="hint" style="margin-bottom: 8px">
+            逐游戏检查成就进度（约 10 个/秒）；全成就的条目会标记为「已通关」，
+            你手动标过的状态不会被回退。进度是「某个账号的」，使用上面的 SteamID
+          </div>
+          <div class="row">
+            <input
+              v-model.number="achievementLimit"
+              class="input"
+              style="width: 90px"
+              type="number"
+              min="1"
+              max="500"
+            />
+            <span class="hint">个 / 次</span>
+            <button
+              class="btn"
+              :disabled="achievementRunning || !libraryReady"
+              @click="runAchievements"
+            >
+              {{ achievementRunning ? "检查中…" : "同步成就" }}
+            </button>
+          </div>
+          <div v-if="achievementResult" class="hint" style="margin-top: 6px">
+            检查 {{ achievementResult.checked }} · 全成就升级 {{ achievementResult.promoted }} ·
+            未变化 {{ achievementResult.unchanged }} · 取不到 {{ achievementResult.failed }}
+            <template v-if="achievementResult.pending > 0">
+              · 还剩 {{ achievementResult.pending }} 个，再点一次继续
+            </template>
+          </div>
+          <ul v-if="achievementResult?.warnings.length" class="warn-list" style="margin-top: 6px">
+            <li v-for="(warning, index) in achievementResult.warnings.slice(0, 5)" :key="index">
+              {{ warning }}
+            </li>
+          </ul>
+        </div>
       </div>
 
       <div class="banner">
@@ -300,6 +374,7 @@ onMounted(() => {
             <li>元数据（标题、封面、价格、评价）以 Steam 为准</li>
             <li>状态、评分、备注、进度以你本地为准，重复同步不会被打回去</li>
             <li>有游玩时长的已拥有游戏算「在玩」，没玩过的算「待玩」</li>
+            <li>成就检查会把全成就的游戏标为「已通关」，你手动标过的状态不会回退</li>
             <li>Steam 时长：没手填过就自动跟随；手填过则保留本地，清空可恢复跟随</li>
             <li>来源里消失的条目只提示、不删除</li>
             <li>首次导入只拿到列表级信息，价格/简介等要点「补全元数据」</li>

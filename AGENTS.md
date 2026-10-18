@@ -90,8 +90,9 @@ node scripts/gen-steam-fixture.mjs
 "not user-confirmed" tiers) and never demotes to `wishlist`; a status the user set
 (`playing` / `completed` / `on_hold` / `dropped` / `ignored`) is never reverted. The Steam
 library uses this to promote games with playtime to `playing` and leaves never-played ones at
-`backlog`. `missing` candidates are scoped per import kind
-(`MissingScope::Wishlist` vs `MissingScope::Library`).
+`backlog`; the achievement check (see `docs/design.md` §5.2) promotes
+`wishlist` / `backlog` / `playing` to `completed` for games with all achievements. `missing`
+candidates are scoped per import kind (`MissingScope::Wishlist` vs `MissingScope::Library`).
 
 Any change to this table requires updating `crates/acgn-store/tests/import_flow.rs` **and** the
 "Sync semantics" section of `README.md`. Those tests are the specification.

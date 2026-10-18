@@ -5,6 +5,7 @@
 //! * 导入合并逻辑（[`Db::import_items`]）是所有数据源的公共入口：
 //!   Steam 愿望单、未来的 Bangumi 收藏、小黑盒导入，都走同一条路。
 
+mod achievements;
 mod error;
 mod games;
 mod imports;
@@ -13,6 +14,7 @@ mod stats;
 
 pub mod db;
 
+pub use achievements::{AchievementOutcome, PendingAchievement};
 pub use db::Db;
 pub use games::GameFilters;
 pub use imports::{ImportRequest, MetadataOutcome, MissingScope, PendingMetadata, RunCounts};

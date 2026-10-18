@@ -88,6 +88,15 @@ Content-Type: application/json
   "options": { "dry_run": false }
 }
 
+### 检查成就进度（全成就 → 已通关；逐游戏查询，limit 默认 200）
+POST {{host}}/api/imports/steam/achievements
+Content-Type: application/json
+
+{
+  "steam_id": "{{steamId}}",
+  "limit": 200
+}
+
 ### 离线 JSON 导入（扁平条目，合并语义）
 ### preview 与 dry_run 是两件事：preview = 返回预览条目；options.dry_run = 不落库
 POST {{host}}/api/imports

@@ -55,7 +55,7 @@ Two deliberate choices:
 | Table | Meaning |
 |---|---|
 | `games` | A catalog item: metadata that belongs to "the world" (title, cover, price, review, …), unique per `(source, external_id)` |
-| `library_entries` | My relationship to a game: status, rating, progress, playtime, note, favorite, plus sync bookkeeping. 1:1 with `games` today |
+| `library_entries` | My relationship to a game: status, rating, progress, playtime, achievements, note, favorite, plus sync bookkeeping. 1:1 with `games` today |
 | `import_runs` | One row per import / enrichment run: counts, warnings, duration, error |
 
 Rationale:
@@ -91,6 +91,10 @@ Additional rules:
   "not user-confirmed" tiers), never demoting to `wishlist`. The Steam library uses it to
   promote a game with `playtime_forever > 0` to `playing` (never-played → `backlog`); a status
   the user set (`playing` / `completed` / `on_hold` / `dropped` / `ignored`) is never reverted.
+- The achievement check (`Db::update_achievements`) uses the same tier idea: a game with all
+  achievements (`total > 0 && achieved >= total`) promotes `wishlist` / `backlog` / `playing`
+  to `completed` (filling `finished_at` / 100% progress when empty). User-set states are never
+  reverted, and failed checks keep the last known progress.
 - `missing` candidates differ per import kind (`MissingScope`): a wishlist import only reports
   entries that were on the wishlist last time, a library import only reports entries that were
   seen in a previous library sync (`source_playtime_minutes IS NOT NULL`). Mixing the two would
@@ -230,6 +234,27 @@ Three paths, chosen automatically:
   (`--library-only` regenerates it from the existing `wishlist.json` without touching the
   network). Real playtimes need a real key and profile.
 
+### 5.2 Achievement check (all achievements → completed)
+
+- `ISteamUserStats/GetPlayerAchievements` is **per game**. There is no usable bulk endpoint:
+  `IPlayerService/GetAchievementsProgress` answers `401` for every request form we tried
+  (GET → 405, GET-style POST → 411/401, JSON body → 401). So the check is a separate on-demand
+  action (`POST /api/imports/steam/achievements`, run mode `steam_achievements`), not part of
+  every library sync.
+- Three response shapes are distinguished: `success: true` + achievements (progress),
+  `success: true` without the array (the game has no achievement set → `0/0`), and
+  `success: false` ("Profile is not public" — not owned or hidden → no data). Only the first
+  two are treated as an answer; `failed` entries keep their previous progress and still advance
+  the polling clock so they cannot block the queue.
+- Poll order is `achievements_checked_at` null-first, then oldest-first (rotating refreshes),
+  and the response reports `pending` (never checked) so the UI can offer "click again to
+  continue". Checking is paced at 3 concurrent + a 150 ms gap (~10 games/s); HTTP 429 stops the
+  run gracefully and already-processed entries stay committed.
+- Full achievements promote `wishlist` / `backlog` / `playing` to `completed`; user-set
+  `completed` / `on_hold` / `dropped` / `ignored` are never reverted.
+- The fixture generator writes deterministic demo achievements (`achievements.json`) so the
+  offline demo exercises the same path.
+
 ## 6. Frontend
 
 - Vue 3 + TypeScript + Pinia + vue-router; no UI framework (the design system is
@@ -245,7 +270,7 @@ Three paths, chosen automatically:
 
 - `acgn-store` integration tests run against an in-memory SQLite (`Db::memory()`) and assert
   the synchronization rules in §4 — including the level rules, dry-run parity, missing
-  handling, playtime provenance and search escaping.
+  handling, playtime provenance, achievement promotion and search escaping.
 - `acgn-steam` tests parse embedded JSON samples (never the network) and cover the ID parser,
   the release-date/count parsers, error redaction and fixture loading.
 - `acgn-server` tests build the router with `tower::ServiceExt::oneshot` and assert the error

@@ -26,8 +26,10 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// 所有数据源共享的协议版本，未来做多端同步时用于兼容性判断。
 ///
 /// * v1 → v2：`LibraryEntry` 新增 `source_playtime_minutes`（Steam 库存时长跟踪）。
-///   旧导出文件仍可还原（缺失字段视为「没有来源值」），新导出给旧客户端会忽略该字段。
-pub const SCHEMA_REVISION: i64 = 2;
+/// * v2 → v3：`LibraryEntry` 新增 `achievements_achieved` / `achievements_total` /
+///   `achievements_checked_at`（成就进度，「全成就 = 已通关」）。
+///   旧导出文件仍可还原（缺失字段视为「没有来源值」），新导出给旧客户端会忽略这些字段。
+pub const SCHEMA_REVISION: i64 = 3;
 
 /// `POST /api/games/delete` 一次最多接受的条目数（HTTP 层校验，见 `docs/api.md`）。
 pub const MAX_BATCH_DELETE: usize = 1000;

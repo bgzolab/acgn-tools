@@ -10,6 +10,7 @@
 //!
 //! 所有路径最终都产出 [`acgn_core::SourceItem`]，入库逻辑与其它数据源共用一套。
 
+pub mod achievements;
 pub mod appdetails;
 pub mod assets;
 pub mod client;
@@ -19,6 +20,7 @@ pub mod library;
 pub mod util;
 pub mod wishlist;
 
+pub use achievements::parse_player_achievements;
 pub use appdetails::AppDetailsData;
 pub use client::{AppDetailsBatch, ImportFetch, SteamClient};
 pub use config::SteamConfig;
@@ -109,6 +111,32 @@ pub fn vanity_resolve_url(vanity: &str) -> String {
     format!("{COMMUNITY_BASE}/id/{vanity}/?xml=1")
 }
 
+/// 单游戏成就进度（需要 API Key；返回的是 `steam_id` 这个用户的达成情况）。
+///
+/// 响应较大（每个成就一条），调用方只需要汇总数字；
+/// 隐私 / 未拥有时 Steam 返回 `success:false`，由 [`parse_player_achievements`] 转成 `None`。
+pub fn player_achievements_url(
+    api_key: &str,
+    steam_id: &str,
+    appid: &str,
+    language: &str,
+) -> String {
+    let mut url = reqwest::Url::parse(&format!(
+        "{API_BASE}/ISteamUserStats/GetPlayerAchievements/v1/"
+    ))
+    .expect("静态 API 地址应当合法");
+
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("key", api_key);
+        pairs.append_pair("steamid", steam_id);
+        pairs.append_pair("appid", appid);
+        pairs.append_pair("l", language);
+    }
+
+    url.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +179,21 @@ mod tests {
             "免费游戏也应算库存：{url}"
         );
         assert!(url.contains("language=schinese"), "{url}");
+    }
+
+    /// 成就接口：appid 与 Key 都要正确编码，语言参数要带上。
+    #[test]
+    fn player_achievements_url_encodes_parameters() {
+        let url = player_achievements_url("A+b&c=d", "76561198000000000", "1245620", "schinese");
+        assert!(
+            url.starts_with(
+                "https://api.steampowered.com/ISteamUserStats/GetPlayerAchievements/v1/?"
+            ),
+            "{url}"
+        );
+        assert!(url.contains("key=A%2Bb%26c%3Dd"), "{url}");
+        assert!(url.contains("steamid=76561198000000000"), "{url}");
+        assert!(url.contains("appid=1245620"), "{url}");
+        assert!(url.contains("l=schinese"), "{url}");
     }
 }
