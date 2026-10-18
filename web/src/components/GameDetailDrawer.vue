@@ -62,6 +62,9 @@ const sourcePlaytimeLabel = computed(() =>
     : "尚未游玩",
 );
 
+/** 有效时长上限：100 年（分钟）。超过它不是手滑就是数据错误，也避免超出 i64 触发英文 serde 400 */
+const MAX_PLAYTIME_MINUTES = 100 * 365 * 24 * 60;
+
 const playtimeHint = computed(() => {
   const raw = playtimeMinutes.value.trim();
   const source = sourcePlaytime.value;
@@ -75,6 +78,9 @@ const playtimeHint = computed(() => {
     return "请填写非负整数（分钟），或留空以清空";
   }
   const minutes = Number.parseInt(raw, 10);
+  if (minutes > MAX_PLAYTIME_MINUTES) {
+    return "时长超出合理范围（上限 100 年）";
+  }
   if (minutes === 0) {
     // 0 是「手动记 0 分钟」，不是「恢复跟随」：两条路的语义不同，提示要写清楚
     return source !== null
@@ -177,6 +183,10 @@ async function saveNoteAndPlaytime() {
       return;
     }
     const minutes = Number.parseInt(raw, 10);
+    if (minutes > MAX_PLAYTIME_MINUTES) {
+      pushToast("warn", "时长不合法", "时长超出合理范围（上限 100 年）");
+      return;
+    }
     // 只在真的变化时才提交，避免无谓写入
     if (minutes !== (item.value.entry.playtime_minutes ?? -1)) {
       patchBody.playtime_minutes = minutes;
