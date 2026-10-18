@@ -24,7 +24,10 @@ pub const APP_NAME: &str = "acgn-tools";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 所有数据源共享的协议版本，未来做多端同步时用于兼容性判断。
-pub const SCHEMA_REVISION: i64 = 1;
+///
+/// * v1 → v2：`LibraryEntry` 新增 `source_playtime_minutes`（Steam 库存时长跟踪）。
+///   旧导出文件仍可还原（缺失字段视为「没有来源值」），新导出给旧客户端会忽略该字段。
+pub const SCHEMA_REVISION: i64 = 2;
 
 /// `POST /api/games/delete` 一次最多接受的条目数（HTTP 层校验，见 `docs/api.md`）。
 pub const MAX_BATCH_DELETE: usize = 1000;

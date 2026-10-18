@@ -177,6 +177,8 @@ impl Db {
     ///
     /// * 字段缺省 = 不改动；
     /// * `rating` / `progress_percent` / `playtime_minutes` 传负数 = 清空；
+    ///   `playtime_minutes` 的清空是「恢复跟随来源」：有 `source_playtime_minutes`
+    ///   时回到来源值，没有才真正置空；
     /// * `note` 传空串 = 清空；
     /// * 状态切到在玩 / 已通关时，自动补 `started_at` / `finished_at`；
     /// * **手工修改过的状态不会再被导入覆盖**（导入只更新元数据）。
@@ -211,7 +213,13 @@ impl Db {
             };
         }
         if let Some(playtime) = patch.playtime_minutes {
-            entry.playtime_minutes = if playtime < 0 { None } else { Some(playtime) };
+            // 负数 = 清空本地手填值：有来源记录（Steam 时长）时恢复跟随来源，
+            // 没有来源记录才真正清空。这是「手动优先」规则的反向操作。
+            entry.playtime_minutes = if playtime < 0 {
+                entry.source_playtime_minutes
+            } else {
+                Some(playtime)
+            };
         }
         if let Some(note) = patch.note.as_deref() {
             entry.note = if note.trim().is_empty() {

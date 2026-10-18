@@ -79,7 +79,8 @@ This is the part future two-way sync (Bangumi, Xiaoheihe) depends on. It is enfo
 | Data | Authority |
 |---|---|
 | Metadata (title, cover, price, review, description, …) | **Source** — overwrite when the source provides a value |
-| Personal state (status, rating, note, progress, playtime, favorite) | **Local** — an import never overwrites it |
+| Personal state (status, rating, note, progress, favorite) | **Local** — an import never overwrites it |
+| Playtime | **Source-tracked, locally overridable** — imports record the source value and `playtime_minutes` follows it until the user edits it by hand (see §4.5) |
 | Items that disappeared from the source | **Reported only** (`missing`), never deleted |
 | Re-importing identical data | **No-op** (`unchanged`) — imports are idempotent |
 
@@ -87,7 +88,12 @@ Additional rules:
 
 - New entries default to `wishlist`; JSON imports may request another status.
 - `SourceItem.status` is adopted only while the local entry is still `wishlist` — importing an
-  "owned" list moves a fresh entry to `backlog`, but never reverts `playing` / `completed`.
+  "owned" list (the Steam library) moves a fresh entry to `backlog`, but never reverts
+  `playing` / `completed`.
+- `missing` candidates differ per import kind (`MissingScope`): a wishlist import only reports
+  entries that were on the wishlist last time, a library import only reports entries that were
+  seen in a previous library sync (`source_playtime_minutes IS NOT NULL`). Mixing the two would
+  flag every unowned wishlist entry as "gone" during a library sync.
 - Title comparison ignores `™` / `®` / case / repeated whitespace, so cosmetic renames do not
   count as changes.
 - Every run is recorded, including failures (`import_runs.error`).
@@ -128,7 +134,8 @@ the merge, or restored ratings/notes will be silently dropped.
 ### 4.4 What never happens
 
 - Deleting rows because a source stopped returning them.
-- Overwriting user state (status / rating / note / progress / playtime / favorite).
+- Overwriting user state (status / rating / note / progress / favorite — and a playtime the user
+  edited by hand; see §4.5).
 - Writing anything during a dry run.
 - Touching `games.updated_at` / `metadata_updated_at` when a refresh finds no changes (the
   frontend shows "metadata fetched … ago", so silent writes look like content changes).
@@ -138,6 +145,23 @@ The only way rows leave the database is an explicit user delete (`DELETE /api/ga
 to `library_entries` and is not recorded in `import_runs`. An item that still exists in the source
 is re-created by the next import (as `added`) — that is intentional. To keep something out of the
 way without losing it, use the `ignored` status instead of deleting.
+
+### 4.5 Playtime: source-tracked, overridden locally
+
+Steam is the authority for *playtime as a measurement*, but the user may have data Steam does not
+know (console / offline hours). Both are kept:
+
+- `library_entries.source_playtime_minutes` — the value the last import reported (0 counts as
+  seen; it also marks "this entry was part of a library sync" for `MissingScope::Library`);
+- `library_entries.playtime_minutes` — the effective value used everywhere (list sorting,
+  dashboard totals, detail view). It **follows the source while it is empty or still equal to the
+  tracked source value**, and stops following as soon as the user edits it (`PATCH`).
+
+Clearing via `PATCH` (`playtime_minutes: -1`) means "drop my manual value": the effective value
+reverts to the tracked source value when one exists, otherwise it becomes empty. Adopting the
+current Steam value is just a `PATCH` with that number — equality with the track resumes
+automatic following. Imports never write `playtime_minutes` when the source has no playtime
+(wishlist items), so a library sync followed by a wishlist sync cannot wipe the tracked value.
 
 ## 5. Data sources (Steam today)
 
@@ -175,6 +199,30 @@ Three paths, chosen automatically:
 - From mainland China, both `store.steampowered.com` and `api.steampowered.com` need a proxy.
   A `Steam → DIRECT` rule in the proxy configuration is the usual cause of timeouts.
 
+### 5.1 Library sync (owned games + playtime)
+
+| Path | Requires | Gives |
+|---|---|---|
+| Official `IPlayerService/GetOwnedGames/v1` | `STEAM_API_KEY` + a public "Game details" privacy setting | every owned app in one request: appid, name, `playtime_forever` (minutes), `playtime_2weeks`, `rtime_last_played` |
+| Offline fixture (`library.json`) | nothing | the frozen `GetOwnedGames` payload used by the demo and tests |
+
+- Unlike the wishlist endpoints, `GetOwnedGames` **refuses anonymous calls** (verified 2026-10:
+  HTTP 401 `Please verify your key= parameter`), and the community XML game list
+  (`games?tab=all&xml=1`) now redirects anonymous visitors to the login page, so a key is the
+  only supported path. The UI hides the library buttons when
+  `GET /api/config` reports `steam.has_api_key: false` (fixture mode excepted).
+- Privacy is the only other gate: with private game details Steam answers `{"response": {}}`.
+  That is reported as "make Game details public", never confused with an empty library
+  (`{"response": {"game_count": 0, "games": []}}`).
+- Owned items arrive as list-level metadata and are imported with `status = backlog`; a wishlist
+  entry that got bought moves to `backlog` through the regular status-adoption rule. Playtime is
+  carried in `SourceItem.playtime_minutes` and merged per §4.5.
+- One request covers the whole library, so there is no pagination or rate-limit dance; the
+  expensive part remains metadata enrichment.
+- The fixture generator writes `library.json` with deterministic demo playtimes
+  (`--library-only` regenerates it from the existing `wishlist.json` without touching the
+  network). Real playtimes need a real key and profile.
+
 ## 6. Frontend
 
 - Vue 3 + TypeScript + Pinia + vue-router; no UI framework (the design system is
@@ -190,7 +238,7 @@ Three paths, chosen automatically:
 
 - `acgn-store` integration tests run against an in-memory SQLite (`Db::memory()`) and assert
   the synchronization rules in §4 — including the level rules, dry-run parity, missing
-  handling and search escaping.
+  handling, playtime provenance and search escaping.
 - `acgn-steam` tests parse embedded JSON samples (never the network) and cover the ID parser,
   the release-date/count parsers, error redaction and fixture loading.
 - `acgn-server` tests build the router with `tower::ServiceExt::oneshot` and assert the error

@@ -3,7 +3,7 @@
 use acgn_core::{
     Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary, RestoreItem, Source, SourceItem,
 };
-use acgn_store::ImportRequest;
+use acgn_store::{ImportRequest, MissingScope};
 use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,62 @@ pub async fn import_steam_wishlist(
             })),
             source_mode: fetch.source_mode,
             extra_warnings: fetch.warnings,
+            missing_scope: MissingScope::Wishlist,
+        })
+        .await?;
+
+    let run = state.db.get_import_run(summary.run_id).await?;
+
+    let preview = if request.preview {
+        state.db.load_many(&summary.sample_ids).await?
+    } else {
+        Vec::new()
+    };
+
+    Ok(Json(ImportResponse {
+        summary,
+        run,
+        preview,
+    }))
+}
+
+/// POST /api/imports/steam/library —— 导入已拥有游戏（含游玩时长）。
+///
+/// 与愿望单不同：官方 `GetOwnedGames` 接口不接受匿名调用，需要 `STEAM_API_KEY`。
+#[derive(Debug, Deserialize)]
+pub struct SteamLibraryRequest {
+    /// 17 位 steamID64、个性域名或个人主页链接
+    pub steam_id: String,
+    #[serde(default)]
+    pub options: ImportOptions,
+    /// 是否返回预览条目（默认 true）
+    #[serde(default = "default_true")]
+    pub preview: bool,
+}
+
+pub async fn import_steam_library(
+    State(state): State<AppState>,
+    ValidJson(request): ValidJson<SteamLibraryRequest>,
+) -> ApiResult<Json<ImportResponse>> {
+    let fetch = state.steam.fetch_library(&request.steam_id).await?;
+
+    let summary = state
+        .db
+        .import_items(&ImportRequest {
+            source: Source::Steam,
+            mode: "steam_library",
+            items: &fetch.items,
+            options: request.options,
+            args: Some(json!({
+                "input": request.steam_id,
+                "steam_id": fetch.steam_id,
+                "source_mode": fetch.source_mode,
+                "resolved_via": fetch.resolved_via,
+            })),
+            source_mode: fetch.source_mode,
+            extra_warnings: fetch.warnings,
+            // 库存导入只对「上次被库存同步见过」的条目负责
+            missing_scope: MissingScope::Library,
         })
         .await?;
 
@@ -140,6 +196,7 @@ pub async fn import_json(
             args: Some(json!({ "items": items.len(), "source": source.as_str() })),
             source_mode: "json",
             extra_warnings: Vec::new(),
+            missing_scope: MissingScope::Wishlist,
         })
         .await?;
 

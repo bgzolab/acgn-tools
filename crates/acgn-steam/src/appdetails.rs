@@ -232,6 +232,8 @@ impl AppDetailsData {
             status: None,
             priority: None,
             source_added_at: None,
+            // appdetails 不携带游玩时长（时长只在库存接口里）：补全时不能覆盖时长跟踪值
+            playtime_minutes: None,
             metadata: self.raw.clone(),
             metadata_level: MetadataLevel::Full,
         }

@@ -43,10 +43,39 @@ const entry = computed(() => item.value?.entry ?? null);
 const title = computed(() => (game.value ? displayTitle(game.value) : ""));
 const subtitle = computed(() => (game.value ? secondaryTitle(game.value) : ""));
 
+/** Steam 记录的时长（来源跟踪值） */
+const sourcePlaytime = computed(() => entry.value?.source_playtime_minutes ?? null);
+/** 当前有效时长是否仍在跟随来源（未被本地手填过） */
+const followsSource = computed(() => {
+  const current = entry.value;
+  if (!current || current.source_playtime_minutes === null) return false;
+  return (
+    current.playtime_minutes === null ||
+    current.playtime_minutes === current.source_playtime_minutes
+  );
+});
+
+/** Steam 记录的可读文案（0 = 尚未游玩） */
+const sourcePlaytimeLabel = computed(() =>
+  sourcePlaytime.value !== null && sourcePlaytime.value > 0
+    ? formatMinutes(sourcePlaytime.value)
+    : "尚未游玩",
+);
+
 const playtimeHint = computed(() => {
   const minutes = Number.parseInt(playtimeMinutes.value, 10);
-  if (!Number.isFinite(minutes) || minutes <= 0) return "留空并保存可清空时长";
-  return `≈ ${(minutes / 60).toFixed(1)} 小时`;
+  const source = sourcePlaytime.value;
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    if (source !== null) {
+      return `留空并保存 = 恢复跟随 Steam 时长（${sourcePlaytimeLabel.value}）`;
+    }
+    return "留空并保存可清空时长";
+  }
+  const base = `≈ ${(minutes / 60).toFixed(1)} 小时`;
+  if (source !== null && minutes !== source) {
+    return `${base} · Steam 记录 ${sourcePlaytimeLabel.value}，保存后以本地为准`;
+  }
+  return base;
 });
 
 async function load(id: number) {
@@ -125,7 +154,7 @@ async function saveNoteAndPlaytime() {
   const raw = playtimeMinutes.value.trim();
 
   if (raw === "") {
-    // 留空 = 清空时长
+    // 留空 = 清空本地手填值；有 Steam 记录时后端会恢复为来源值
     if (item.value.entry.playtime_minutes !== null) patchBody.playtime_minutes = -1;
   } else {
     const minutes = Number.parseInt(raw, 10);
@@ -142,6 +171,17 @@ async function saveNoteAndPlaytime() {
   const saved = await patch(patchBody);
   // 只有真的保存成功才提示「已保存」：失败时 patch() 已经弹过错误 toast
   if (saved) pushToast("ok", "已保存", "备注与时长已更新");
+}
+
+/** 一键采用 Steam 时长：等于来源值后恢复「自动跟随」 */
+async function adoptSourcePlaytime() {
+  const source = entry.value?.source_playtime_minutes;
+  if (source === null || source === undefined) return;
+  const saved = await patch({ playtime_minutes: source });
+  if (saved) {
+    playtimeMinutes.value = source > 0 ? String(source) : "";
+    pushToast("ok", "已采用 Steam 时长", "之后库存同步会自动跟随");
+  }
 }
 
 async function doRefresh() {
@@ -281,6 +321,19 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
             placeholder="例如 750"
           />
           <div class="hint" style="margin-top: 4px">{{ playtimeHint }}</div>
+          <div
+            v-if="sourcePlaytime !== null && !followsSource"
+            class="row tight"
+            style="margin-top: 6px"
+          >
+            <span class="hint">Steam 记录：{{ sourcePlaytimeLabel }}</span>
+            <button class="btn sm ghost" :disabled="saving" @click="adoptSourcePlaytime">
+              采用 Steam 时长
+            </button>
+          </div>
+          <div v-else-if="sourcePlaytime !== null" class="hint" style="margin-top: 4px">
+            当前跟随 Steam 时长（{{ sourcePlaytimeLabel }}）
+          </div>
         </div>
 
         <div class="field">
@@ -357,7 +410,18 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           <dd>{{ formatDateTime(entry.last_synced_at) }}</dd>
 
           <dt v-if="entry.playtime_minutes">时长</dt>
-          <dd v-if="entry.playtime_minutes">{{ formatMinutes(entry.playtime_minutes) }}</dd>
+          <dd v-if="entry.playtime_minutes">
+            {{ formatMinutes(entry.playtime_minutes) }}
+            <span
+              v-if="
+                entry.source_playtime_minutes !== null &&
+                entry.playtime_minutes !== entry.source_playtime_minutes
+              "
+              class="hint"
+            >
+              （本地手填；Steam 记录 {{ formatMinutes(entry.source_playtime_minutes) }}）
+            </span>
+          </dd>
 
           <dt>来源 ID</dt>
           <dd>{{ game.source }} / {{ game.external_id }}</dd>

@@ -18,9 +18,13 @@ use crate::appdetails::parse_app_details;
 use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
+use crate::library::{OwnedGamesPayload, owned_game_to_source_item};
 use crate::util::extract_xml_tag;
 use crate::wishlist::{WishlistPayload, wishlist_to_source_item};
-use crate::{app_details_url, official_wishlist_url, public_wishlist_url, vanity_resolve_url};
+use crate::{
+    app_details_url, official_wishlist_url, owned_games_url, public_wishlist_url,
+    vanity_resolve_url,
+};
 
 /// 愿望单最多翻多少页（每页约 100 条，足够 6000 个愿望）。
 const MAX_WISHLIST_PAGES: u32 = 60;
@@ -136,9 +140,9 @@ pub struct AppDetailsBatch {
     pub last_error: Option<Error>,
 }
 
-/// 一次愿望单抓取的结果。
+/// 一次抓取的结果（愿望单 / 库存共用）。
 #[derive(Debug, Clone)]
-pub struct WishlistFetch {
+pub struct ImportFetch {
     /// 解析后的 steamID64
     pub steam_id: String,
     pub items: Vec<SourceItem>,
@@ -228,7 +232,7 @@ impl SteamClient {
     }
 
     /// 抓取愿望单：公开接口优先，失败且配了 Key 就回退官方接口。
-    pub async fn fetch_wishlist(&self, input: &str) -> Result<WishlistFetch> {
+    pub async fn fetch_wishlist(&self, input: &str) -> Result<ImportFetch> {
         let (steam_id, resolved_via, mut warnings) = self.resolve_id(input).await?;
 
         if let Some(fixture) = &self.fixture {
@@ -242,7 +246,7 @@ impl SteamClient {
                 items.len(),
                 fixture.wishlist_path.display()
             ));
-            return Ok(WishlistFetch {
+            return Ok(ImportFetch {
                 steam_id,
                 items,
                 warnings,
@@ -254,7 +258,7 @@ impl SteamClient {
         match self.fetch_public_wishlist(&steam_id).await {
             Ok((items, mut extra)) => {
                 warnings.append(&mut extra);
-                Ok(WishlistFetch {
+                Ok(ImportFetch {
                     steam_id,
                     items,
                     warnings,
@@ -279,7 +283,7 @@ impl SteamClient {
                     "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取名称/价格/简介"
                         .to_string(),
                 );
-                Ok(WishlistFetch {
+                Ok(ImportFetch {
                     steam_id,
                     items,
                     warnings,
@@ -288,6 +292,90 @@ impl SteamClient {
                 })
             }
         }
+    }
+
+    /// 抓取库存（已拥有游戏 + 游玩时长）。
+    ///
+    /// 与愿望单不同，官方 `GetOwnedGames` 接口 **不接受匿名调用**（实测 401），
+    /// 因此除 fixture 外必须配置 `STEAM_API_KEY`；同时要求「游戏详情」对所有人可见，
+    /// 否则 Steam 返回空对象。两者都要给出可操作的错误提示。
+    pub async fn fetch_library(&self, input: &str) -> Result<ImportFetch> {
+        let (steam_id, resolved_via, mut warnings) = self.resolve_id(input).await?;
+
+        if let Some(fixture) = &self.fixture {
+            let Some(path) = &fixture.library_path else {
+                return Err(Error::rejected(
+                    "离线 fixture 未提供 library.json：无法演示库存导入（重新生成 fixture 或改用真实网络）",
+                ));
+            };
+            let games = fixture.library_games();
+            let items: Vec<SourceItem> = games.iter().map(owned_game_to_source_item).collect();
+            warnings.push(format!(
+                "离线 fixture 模式：{} 个条目来自 {}",
+                items.len(),
+                path.display()
+            ));
+            return Ok(ImportFetch {
+                steam_id,
+                items,
+                warnings,
+                source_mode: "fixture",
+                resolved_via: "fixture",
+            });
+        }
+
+        let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) else {
+            return Err(Error::invalid(
+                "导入 Steam 库存需要 API Key（官方 GetOwnedGames 接口不允许匿名调用）：\
+                 请设置 STEAM_API_KEY 后重启服务，并确认「游戏详情」隐私为公开",
+            ));
+        };
+
+        let url = owned_games_url(api_key, &steam_id, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(Error::rejected(
+                "Steam 拒绝了库存请求：API Key 无效或已过期（到 https://steamcommunity.com/dev/apikey 重新申请）",
+            ));
+        }
+        if status.as_u16() == 429 {
+            return Err(Error::rejected(
+                "GetOwnedGames 触发限流（HTTP 429），请稍后再同步库存",
+            ));
+        }
+        if !status.is_success() {
+            return Err(Error::rejected(format!("GetOwnedGames 返回 HTTP {status}")));
+        }
+
+        let payload: OwnedGamesPayload = response.json().await.net()?;
+        if payload.privacy_blocked() {
+            return Err(Error::rejected(
+                "Steam 未返回库存：请确认 SteamID 正确，并把「游戏详情」隐私设置为公开",
+            ));
+        }
+
+        let games = payload.into_games();
+        if games.is_empty() {
+            warnings.push(
+                "GetOwnedGames 返回 0 条：确认「游戏详情」为公开，或该账号确实没有游戏".to_string(),
+            );
+        }
+        let items: Vec<SourceItem> = games.iter().map(owned_game_to_source_item).collect();
+        Ok(ImportFetch {
+            steam_id,
+            items,
+            warnings,
+            source_mode: "official_api",
+            resolved_via,
+        })
     }
 
     /// 公开接口：分页拉取 `wishlistdata`，按 appid 去重。

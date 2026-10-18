@@ -15,7 +15,7 @@ pub mod db;
 
 pub use db::Db;
 pub use games::GameFilters;
-pub use imports::{ImportRequest, MetadataOutcome, PendingMetadata, RunCounts};
+pub use imports::{ImportRequest, MetadataOutcome, MissingScope, PendingMetadata, RunCounts};
 pub use rows::{GameEntryRow, ImportRunRow};
 
 /// 便于测试与外部构建内存库。

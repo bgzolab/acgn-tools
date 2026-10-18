@@ -52,6 +52,10 @@ pub fn api_router(state: AppState) -> Router<AppState> {
             "/imports/steam/wishlist",
             post(imports::import_steam_wishlist),
         )
+        .route(
+            "/imports/steam/library",
+            post(imports::import_steam_library),
+        )
         .route("/imports/restore", post(imports::restore_json))
         .route("/enrich", post(enrich::enrich))
         // 兜底：未知的 /api 路径返回 JSON，而不是前端的 index.html
@@ -74,6 +78,7 @@ async fn api_index() -> Json<serde_json::Value> {
             { "method": "POST",  "path": "/api/games/delete",              "desc": "批量删除（多选清理，未知 id 忽略）" },
             { "method": "POST",  "path": "/api/games/{id}/refresh-metadata", "desc": "抓取该条目的商店详情" },
             { "method": "POST",  "path": "/api/imports/steam/wishlist",    "desc": "导入 Steam 愿望单" },
+            { "method": "POST",  "path": "/api/imports/steam/library",     "desc": "导入 Steam 库存（已拥有游戏 + 游玩时长，需要 STEAM_API_KEY）" },
             { "method": "POST",  "path": "/api/imports",                   "desc": "通用 JSON 导入（扁平 SourceItem，合并语义）" },
             { "method": "POST",  "path": "/api/imports/restore",           "desc": "备份还原（导出文件原样回灌，文件优先）" },
             { "method": "GET",   "path": "/api/imports",                   "desc": "导入历史" },

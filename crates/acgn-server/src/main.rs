@@ -11,7 +11,7 @@ use acgn_server::config::AppConfig;
 use acgn_server::state::AppState;
 use acgn_server::{config as server_config, routes};
 use acgn_steam::{SteamClient, SteamConfig};
-use acgn_store::{Db, ImportRequest};
+use acgn_store::{Db, ImportRequest, MissingScope};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
@@ -159,6 +159,7 @@ async fn seed(
             args: None,
             source_mode: fetch.source_mode,
             extra_warnings: fetch.warnings,
+            missing_scope: MissingScope::Wishlist,
         })
         .await?;
 

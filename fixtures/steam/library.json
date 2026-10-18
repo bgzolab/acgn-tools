@@ -1,0 +1,193 @@
+{
+  "steam_id": "76561198000000000",
+  "fetched_at": "2026-10-18T06:30:11.691Z",
+  "note": "样例数据：时长由 scripts/gen-steam-fixture.mjs 确定性生成（演示用，不是真实账号数据）",
+  "response": {
+    "game_count": 27,
+    "games": [
+      {
+        "appid": 105600,
+        "name": "Terraria",
+        "playtime_forever": 0,
+        "playtime_2weeks": 0
+      },
+      {
+        "appid": 294100,
+        "name": "RimWorld",
+        "playtime_forever": 173,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1791095411
+      },
+      {
+        "appid": 367520,
+        "name": "Hollow Knight",
+        "playtime_forever": 346,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1790490611
+      },
+      {
+        "appid": 413150,
+        "name": "Stardew Valley",
+        "playtime_forever": 519,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1789885811
+      },
+      {
+        "appid": 427520,
+        "name": "Factorio",
+        "playtime_forever": 692,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1789281011
+      },
+      {
+        "appid": 526870,
+        "name": "Satisfactory",
+        "playtime_forever": 0,
+        "playtime_2weeks": 0
+      },
+      {
+        "appid": 548430,
+        "name": "Deep Rock Galactic",
+        "playtime_forever": 1038,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1788071411
+      },
+      {
+        "appid": 646570,
+        "name": "Slay the Spire",
+        "playtime_forever": 1211,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1787466611
+      },
+      {
+        "appid": 814380,
+        "name": "Sekiro™: Shadows Die Twice - GOTY Edition",
+        "playtime_forever": 1384,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1786861811
+      },
+      {
+        "appid": 881100,
+        "name": "Noita",
+        "playtime_forever": 1557,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1786257011
+      },
+      {
+        "appid": 949230,
+        "name": "Cities: Skylines II",
+        "playtime_forever": 0,
+        "playtime_2weeks": 0
+      },
+      {
+        "appid": 975370,
+        "name": "Dwarf Fortress",
+        "playtime_forever": 1903,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1785047411
+      },
+      {
+        "appid": 1030300,
+        "name": "Hollow Knight: Silksong",
+        "playtime_forever": 2076,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1784442611
+      },
+      {
+        "appid": 1086940,
+        "name": "Baldur's Gate 3",
+        "playtime_forever": 2249,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1783837811
+      },
+      {
+        "appid": 1091500,
+        "name": "Cyberpunk 2077",
+        "playtime_forever": 2422,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1783233011
+      },
+      {
+        "appid": 1145360,
+        "name": "Hades",
+        "playtime_forever": 0,
+        "playtime_2weeks": 0
+      },
+      {
+        "appid": 1245620,
+        "name": "ELDEN RING",
+        "playtime_forever": 2768,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1782023411
+      },
+      {
+        "appid": 1627720,
+        "name": "Lies of P",
+        "playtime_forever": 2941,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1781418611
+      },
+      {
+        "appid": 1687950,
+        "name": "Persona 5 Royal",
+        "playtime_forever": 3114,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1780813811
+      },
+      {
+        "appid": 1794680,
+        "name": "Vampire Survivors",
+        "playtime_forever": 3287,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1780209011
+      },
+      {
+        "appid": 1817230,
+        "name": "Hi-Fi RUSH",
+        "playtime_forever": 0,
+        "playtime_2weeks": 0
+      },
+      {
+        "appid": 1888160,
+        "name": "ARMORED CORE™ VI FIRES OF RUBICON™",
+        "playtime_forever": 3633,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1778999411
+      },
+      {
+        "appid": 2246340,
+        "name": "Monster Hunter Wilds",
+        "playtime_forever": 3806,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1778394611
+      },
+      {
+        "appid": 2344520,
+        "name": "Diablo® IV",
+        "playtime_forever": 3979,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1777789811
+      },
+      {
+        "appid": 2358720,
+        "name": "Black Myth: Wukong",
+        "playtime_forever": 4152,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1777185011
+      },
+      {
+        "appid": 2379780,
+        "name": "Balatro",
+        "playtime_forever": 0,
+        "playtime_2weeks": 0
+      },
+      {
+        "appid": 2679460,
+        "name": "Metaphor: ReFantazio",
+        "playtime_forever": 4498,
+        "playtime_2weeks": 0,
+        "rtime_last_played": 1775975411
+      }
+    ]
+  }
+}

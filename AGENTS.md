@@ -81,12 +81,15 @@ node scripts/gen-steam-fixture.mjs
 | Data | Authority |
 |---|---|
 | Metadata (title, cover, price, review, description, …) | **Source** — overwrite when the source provides a value |
-| Personal state (status, rating, note, progress, playtime, favorite) | **Local** — an import must never overwrite it |
+| Personal state (status, rating, note, progress, favorite) | **Local** — an import must never overwrite it |
+| Playtime | **Source-tracked, locally overridable** — imports record `source_playtime_minutes` and `playtime_minutes` follows it until the user edits it (design.md §4.5) |
 | Items that disappeared from the source | **Reported only** (`missing`), never deleted |
 | Re-importing identical data | Must be a no-op (`unchanged`), imports are idempotent |
 
 `SourceItem.status` is only adopted when the local entry is still `wishlist` (e.g. importing an
-"owned" list may move a fresh entry to `backlog`, but never reverts a user's `playing`/`completed`).
+"owned" list — the Steam library — may move a fresh entry to `backlog`, but never reverts a
+user's `playing`/`completed`). `missing` candidates are scoped per import kind
+(`MissingScope::Wishlist` vs `MissingScope::Library`).
 
 Any change to this table requires updating `crates/acgn-store/tests/import_flow.rs` **and** the
 "Sync semantics" section of `README.md`. Those tests are the specification.
@@ -172,7 +175,7 @@ case as a test first.
 | `ACGN_WEB_DIR` | Frontend build output served by the API (default `./web/dist`) |
 | `ACGN_CORS_ORIGINS` | Comma-separated CORS allowlist |
 | `ACGN_STEAM_FIXTURE` | Point at `fixtures/steam` to run fully offline |
-| `STEAM_API_KEY` | Optional; only sent to the official API when configured (that endpoint works anonymously) |
+| `STEAM_API_KEY` | Optional for the wishlist; **required for the library sync** (`GetOwnedGames` has no anonymous access). Only sent when configured |
 | `STEAM_COUNTRY` / `STEAM_LANGUAGE` | Store country/language for prices and names |
 | `STEAM_ENRICH_CONCURRENCY` / `STEAM_ENRICH_DELAY_MS` | Enrichment rate (default 1 / 1500ms ≈ 0.67 req/s, the `appdetails` budget) |
 

@@ -66,6 +66,10 @@ export interface SteamImportBody {
 export const importSteamWishlist = (body: SteamImportBody) =>
   http.post<ImportResponse>("/imports/steam/wishlist", body);
 
+/** 导入 Steam 库存（已拥有游戏 + 游玩时长）；需要后端配置 STEAM_API_KEY */
+export const importSteamLibrary = (body: SteamImportBody) =>
+  http.post<ImportResponse>("/imports/steam/library", body);
+
 export interface JsonImportBody {
   items: unknown[];
   source?: string;

@@ -88,6 +88,8 @@ export interface LibraryEntry {
   rating: number | null;
   progress_percent: number | null;
   playtime_minutes: number | null;
+  /** 最近一次来源导入报告的时长（Steam playtime_forever）；用于「手动优先」与展示 */
+  source_playtime_minutes: number | null;
   note: string | null;
   source_added_at: string | null;
   started_at: string | null;

@@ -53,6 +53,12 @@ pub struct SourceItem {
     pub priority: Option<i64>,
     /// 来源侧「加入时间」
     pub source_added_at: Option<DateTime<Utc>>,
+    /// 来源侧记录的累计游玩时长（分钟，Steam 的 `playtime_forever`）。
+    ///
+    /// 这是「来源测量值」而不是个人状态：存储层把它记进
+    /// `library_entries.source_playtime_minutes`；是否采纳为展示值由合并规则决定
+    /// （用户手填过的时长优先，见 `docs/design.md` §4.5）。
+    pub playtime_minutes: Option<i64>,
     /// 来源侧原始载荷，落库到 `games.metadata_json`，方便以后补字段
     pub metadata: Option<serde_json::Value>,
     /// 这一份数据的详细程度（决定能否覆盖已有的封面等字段）

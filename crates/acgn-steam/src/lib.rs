@@ -15,13 +15,15 @@ pub mod assets;
 pub mod client;
 pub mod config;
 pub mod fixture;
+pub mod library;
 pub mod util;
 pub mod wishlist;
 
 pub use appdetails::AppDetailsData;
-pub use client::{AppDetailsBatch, SteamClient, WishlistFetch};
+pub use client::{AppDetailsBatch, ImportFetch, SteamClient};
 pub use config::SteamConfig;
 pub use fixture::FixtureData;
+pub use library::{OwnedGame, OwnedGamesPayload};
 pub use wishlist::{WishlistItem, WishlistPayload};
 
 /// Steam 商店 CDN（header / 竖版封面都能直接拼出来，不依赖 hash）。
@@ -80,6 +82,28 @@ pub fn app_details_url(appid: &str, country: &str, language: &str) -> String {
     format!("{STORE_BASE}/api/appdetails?appids={appid}&cc={country}&l={language}")
 }
 
+/// 官方库存接口（**必须**带 API Key：匿名调用会被 401 拒绝）。
+///
+/// `include_played_free_games` 让免费游戏（如 CS2 / Dota）也出现在库存里；
+/// 名字与图标由 appdetails 之外的本接口顺带返回（`include_appinfo`）。
+pub fn owned_games_url(api_key: &str, steam_id: &str, language: &str) -> String {
+    let mut url = reqwest::Url::parse(&format!("{API_BASE}/IPlayerService/GetOwnedGames/v1/"))
+        .expect("静态 API 地址应当合法");
+
+    {
+        let mut pairs = url.query_pairs_mut();
+        pairs.append_pair("key", api_key);
+        pairs.append_pair("steamid", steam_id);
+        pairs.append_pair("include_appinfo", "1");
+        pairs.append_pair("include_played_free_games", "1");
+        pairs.append_pair("include_free_sub", "1");
+        pairs.append_pair("format", "json");
+        pairs.append_pair("language", language);
+    }
+
+    url.to_string()
+}
+
 /// vanity URL 转 steamID64（无需 API Key，解析 XML）。
 pub fn vanity_resolve_url(vanity: &str) -> String {
     format!("{COMMUNITY_BASE}/id/{vanity}/?xml=1")
@@ -109,5 +133,23 @@ mod tests {
             "cursor 必须被编码：{url}"
         );
         assert!(!url.contains("&c="), "未编码的 & 会截断 query：{url}");
+    }
+
+    /// 库存接口必须带上 Key 与关键开关；Key 里的特殊字符也要被正确编码。
+    #[test]
+    fn owned_games_url_carries_key_and_switches() {
+        let url = owned_games_url("A+b&c=d", "76561198000000000", "schinese");
+        assert!(
+            url.starts_with("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?"),
+            "{url}"
+        );
+        assert!(url.contains("key=A%2Bb%26c%3Dd"), "Key 必须被编码：{url}");
+        assert!(url.contains("steamid=76561198000000000"), "{url}");
+        assert!(url.contains("include_appinfo=1"), "{url}");
+        assert!(
+            url.contains("include_played_free_games=1"),
+            "免费游戏也应算库存：{url}"
+        );
+        assert!(url.contains("language=schinese"), "{url}");
     }
 }

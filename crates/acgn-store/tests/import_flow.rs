@@ -7,7 +7,7 @@ use acgn_core::{
     EntryPatch, GameListQuery, ImportOptions, MediaKind, MetadataLevel, RestoreItem, Source,
     SourceItem, Status,
 };
-use acgn_store::{Db, GameFilters, ImportRequest, MetadataOutcome};
+use acgn_store::{Db, GameFilters, ImportRequest, MetadataOutcome, MissingScope};
 use chrono::Utc;
 
 /// 内存库 + 迁移。
@@ -50,6 +50,7 @@ async fn import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
         args: None,
         source_mode: "test",
         extra_warnings: Vec::new(),
+        missing_scope: MissingScope::Wishlist,
     })
     .await
     .expect("导入不应失败")
@@ -68,9 +69,66 @@ async fn dry_import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
         args: None,
         source_mode: "test",
         extra_warnings: Vec::new(),
+        missing_scope: MissingScope::Wishlist,
     })
     .await
     .expect("预览不应失败")
+}
+
+/// 库存条目（`GetOwnedGames` 的映射结果）：已拥有 + 来源时长。
+fn library_item(appid: &str, title: &str, playtime_minutes: i64) -> SourceItem {
+    SourceItem {
+        source: Source::Steam,
+        external_id: appid.to_string(),
+        media_kind: MediaKind::Game,
+        title: title.to_string(),
+        status: Some(Status::Backlog),
+        playtime_minutes: Some(playtime_minutes),
+        ..Default::default()
+    }
+}
+
+/// 库存同步（与 `POST /api/imports/steam/library` 同一套参数）。
+async fn import_library(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
+    db.import_items(&ImportRequest {
+        source: Source::Steam,
+        mode: "steam_library",
+        items,
+        options: ImportOptions::default(),
+        args: None,
+        source_mode: "test",
+        extra_warnings: Vec::new(),
+        missing_scope: MissingScope::Library,
+    })
+    .await
+    .expect("库存导入不应失败")
+}
+
+/// 库存预览（dry_run）。
+async fn dry_import_library(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
+    db.import_items(&ImportRequest {
+        source: Source::Steam,
+        mode: "steam_library",
+        items,
+        options: ImportOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+        args: None,
+        source_mode: "test",
+        extra_warnings: Vec::new(),
+        missing_scope: MissingScope::Library,
+    })
+    .await
+    .expect("库存预览不应失败")
+}
+
+/// 取一条（不存在直接 panic，测试里不需要重复处理 Option）。
+async fn get(db: &Db, appid: &str) -> acgn_core::GameWithEntry {
+    db.get_game_by_external(Source::Steam, appid)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("条目 {appid} 应存在"))
 }
 
 #[tokio::test]
@@ -286,6 +344,7 @@ async fn dry_run_reports_without_writing() {
             args: None,
             source_mode: "test",
             extra_warnings: Vec::new(),
+            missing_scope: MissingScope::Wishlist,
         })
         .await
         .unwrap();
@@ -311,6 +370,11 @@ async fn restore_round_trip_preserves_state_and_is_idempotent() {
         .await
         .unwrap()
         .unwrap();
+
+    // 库存同步先建立「来源时长」跟踪（4621 分钟），用户再手填 123 分钟：
+    // 还原必须把两个值都带回来。
+    import_library(&source_db, &[library_item("900", "Omicron", 4621)]).await;
+
     source_db
         .update_entry(
             game.game.id,
@@ -361,6 +425,11 @@ async fn restore_round_trip_preserves_state_and_is_idempotent() {
     assert_eq!(restored.entry.rating, Some(9));
     assert_eq!(restored.entry.progress_percent, Some(45));
     assert_eq!(restored.entry.playtime_minutes, Some(123));
+    assert_eq!(
+        restored.entry.source_playtime_minutes,
+        Some(4621),
+        "来源时长跟踪值也必须随导出/还原往返"
+    );
     assert_eq!(restored.entry.note.as_deref(), Some("还原要保留这些"));
     assert!(restored.entry.favorite);
     assert_eq!(restored.entry.priority, Some(2));
@@ -435,6 +504,7 @@ async fn filtered_out_items_are_not_reported_as_missing() {
             args: None,
             source_mode: "test",
             extra_warnings: Vec::new(),
+            missing_scope: MissingScope::Wishlist,
         })
         .await
         .unwrap();
@@ -459,6 +529,7 @@ async fn filtered_out_items_are_not_reported_as_missing() {
             args: None,
             source_mode: "test",
             extra_warnings: Vec::new(),
+            missing_scope: MissingScope::Wishlist,
         })
         .await
         .unwrap();
@@ -657,4 +728,173 @@ async fn list_filters_and_stats_work() {
         Some(1)
     );
     assert!(!stats.recent_imports.is_empty(), "应记录导入历史");
+}
+
+// -------------------------------------------------------- 库存导入（已拥有游戏 + 时长）
+
+#[tokio::test]
+async fn library_import_creates_backlog_with_source_playtime() {
+    let db = setup().await;
+
+    let summary = import_library(
+        &db,
+        &[
+            library_item("1001", "Owned Never Played", 0),
+            library_item("1002", "Owned Played", 4621),
+        ],
+    )
+    .await;
+    assert_eq!(summary.added, 2, "首次库存导入应新增 2 条");
+
+    let never = get(&db, "1001").await;
+    assert_eq!(never.entry.status, Status::Backlog, "已拥有 → 待玩");
+    assert_eq!(never.entry.playtime_minutes, Some(0), "0 分钟也是有效时长");
+    assert_eq!(never.entry.source_playtime_minutes, Some(0));
+
+    let played = get(&db, "1002").await;
+    assert_eq!(played.entry.playtime_minutes, Some(4621));
+    assert_eq!(played.entry.source_playtime_minutes, Some(4621));
+
+    // 幂等：同一份库存重复同步必须 no-op
+    let again = import_library(
+        &db,
+        &[
+            library_item("1001", "Owned Never Played", 0),
+            library_item("1002", "Owned Played", 4621),
+        ],
+    )
+    .await;
+    assert_eq!((again.added, again.updated, again.unchanged), (0, 0, 2));
+    assert_eq!(again.missing, 0);
+}
+
+#[tokio::test]
+async fn library_playtime_follows_source_until_user_edits() {
+    let db = setup().await;
+    import_library(&db, &[library_item("1100", "Played", 120)]).await;
+
+    // 时长增加 → 自动跟随；预览与实际导入同一口径，且预览不写库
+    let preview = dry_import_library(&db, &[library_item("1100", "Played", 300)]).await;
+    assert_eq!(
+        (preview.updated, preview.unchanged),
+        (1, 0),
+        "预览应看到时长变化"
+    );
+    assert_eq!(
+        get(&db, "1100").await.entry.playtime_minutes,
+        Some(120),
+        "预览不写库"
+    );
+
+    let summary = import_library(&db, &[library_item("1100", "Played", 300)]).await;
+    assert_eq!(summary.updated, 1);
+    assert_eq!(get(&db, "1100").await.entry.playtime_minutes, Some(300));
+
+    // 用户手填（例如主机 / 离线时长）：之后不再被来源覆盖，但来源值继续跟踪
+    db.update_entry(
+        get(&db, "1100").await.game.id,
+        &EntryPatch {
+            playtime_minutes: Some(500),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let summary = import_library(&db, &[library_item("1100", "Played", 360)]).await;
+    assert_eq!(summary.updated, 1, "来源跟踪值变化仍应报告 updated");
+    let entry = get(&db, "1100").await.entry;
+    assert_eq!(entry.playtime_minutes, Some(500), "手填值优先");
+    assert_eq!(entry.source_playtime_minutes, Some(360));
+
+    // PATCH 负数（清空）= 恢复跟随来源
+    let cleared = db
+        .update_entry(
+            get(&db, "1100").await.game.id,
+            &EntryPatch {
+                playtime_minutes: Some(-1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleared.entry.playtime_minutes, Some(360));
+
+    // 恢复跟随后再同步同一份库存：幂等
+    let summary = import_library(&db, &[library_item("1100", "Played", 360)]).await;
+    assert_eq!((summary.updated, summary.unchanged), (0, 1));
+}
+
+#[tokio::test]
+async fn library_import_adopts_wishlist_entries_into_backlog() {
+    let db = setup().await;
+    import(
+        &db,
+        &[
+            item("1200", "Bought And Playing"),
+            item("1201", "Bought Not Started"),
+        ],
+    )
+    .await;
+
+    // 1200 已经被用户标成在玩：库存同步不能把状态打回待玩
+    db.update_entry(
+        get(&db, "1200").await.game.id,
+        &EntryPatch {
+            status: Some(Status::Playing),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let summary = import_library(
+        &db,
+        &[
+            library_item("1200", "Bought And Playing", 45),
+            library_item("1201", "Bought Not Started", 0),
+        ],
+    )
+    .await;
+    assert_eq!(summary.updated, 2);
+
+    let played = get(&db, "1200").await;
+    assert_eq!(played.entry.status, Status::Playing, "本地状态必须优先");
+    assert_eq!(played.entry.playtime_minutes, Some(45), "时长仍应采纳");
+
+    let fresh = get(&db, "1201").await;
+    assert_eq!(
+        fresh.entry.status,
+        Status::Backlog,
+        "仍是愿望单的条目应被挪到待玩"
+    );
+}
+
+#[tokio::test]
+async fn library_missing_scope_is_separate_from_wishlist() {
+    let db = setup().await;
+    import(&db, &[item("1300", "Wishlist Only")]).await;
+    import_library(&db, &[library_item("1301", "Owned A", 10)]).await;
+
+    // 库存里少了 1301：只报库存口径的 1 条；愿望单条目 1300 不归库存管
+    let summary = import_library(&db, &[library_item("1302", "Owned B", 5)]).await;
+    assert_eq!(summary.missing, 1);
+    let warning = summary
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("已不在来源中"))
+        .expect("应有 missing 告警");
+    assert!(warning.contains("退款"), "应使用库存口径的文案：{warning}");
+
+    // 反过来：愿望单导入只对愿望单负责，库存条目不算 missing
+    let summary = import(&db, &[]).await;
+    assert_eq!(summary.missing, 1);
+    let warning = summary
+        .warnings
+        .iter()
+        .find(|warning| warning.contains("已不在来源中"))
+        .expect("应有 missing 告警");
+    assert!(
+        warning.contains("愿望单"),
+        "应使用愿望单口径的文案：{warning}"
+    );
 }
