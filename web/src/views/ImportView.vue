@@ -234,7 +234,7 @@ onMounted(() => {
             @keyup.enter="runSteam('wishlist', false)"
           />
           <div class="hint" style="margin-top: 5px">
-            在 Steam 客户端「个人资料 → 编辑资料」或 steamid.io 可以查到 17 位 ID
+            支持 17 位 ID、个性域名（如 bgzocn）或主页链接；个性域名会自动解析成 64 位 ID
           </div>
         </div>
 
