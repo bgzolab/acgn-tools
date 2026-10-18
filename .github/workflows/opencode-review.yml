@@ -12,12 +12,17 @@ concurrency:
 
 jobs:
   # 先等 ci workflow 的 fmt / clippy / test / typecheck / build 全部通过，再开始审查。
-  # 这里不重复跑检查：ci 是独立 workflow，runner 时间与审查配额都只花一次；
-  # 审查 agent 也不会再在会话里重跑整套质量门。
+  # 质量门本身只跑一次：ci 是独立 workflow，审查 agent 也不会在会话里重跑整套门。
+  #
+  # 为什么门禁用「轮询 job」而不是 workflow_run 事件：opencode github handler 只认
+  # pull_request / issue_comment 这类事件，workflow_run 触发的 run 无法在 PR 上评论，
+  # 审查必须由本 workflow 的 pull_request run 发起，所以只能在这个 run 里同步等 CI。
+  # 代价是等待期间占一个 runner（只轮询、不构建，CI 有缓存时约 0.5-3 分钟），
+  # 换来「CI 失败就不启动审查」且不依赖额外 action；这是有意的取舍。
   quality-gates:
     if: github.event.pull_request.user.login == 'bgzo' && !github.event.pull_request.draft
     runs-on: ubuntu-latest
-    # 看到 ci run 后等待窗口会按 ci 的最长执行时间延展（最多 42 分钟）；
+    # 看到 ci run 后等待窗口延展到 38 分钟（覆盖 runner 排队 + backend 的 30 分钟上限）；
     # job 上限 45 分钟，保证循环超时前能打印明确错误而不是被中途取消
     timeout-minutes: 45
     permissions:
@@ -99,9 +104,10 @@ jobs:
             if [ -n "${run}" ]; then
               if [ "${seen_run}" != "true" ]; then
                 seen_run=true
-                # 看到 run 后按 ci backend 的 30 分钟上限 + 2 分钟缓冲延展等待，
-                # 但不越过硬上限
-                candidate=$((SECONDS + 32 * 60))
+                # 延展到 38 分钟：ci backend 自己允许跑 30 分钟，且 run 创建后可能先
+                # 排队几分钟才真正开始；32 分钟会在「排队 + 30 分钟」时提前误判超时。
+                # 38 仍小于 42 分钟硬上限。
+                candidate=$((SECONDS + 38 * 60))
                 if [ "${candidate}" -lt "${hard_deadline}" ]; then
                   deadline="${candidate}"
                 fi
@@ -141,7 +147,9 @@ jobs:
             fi
 
             if [ "${SECONDS}" -ge "${deadline}" ]; then
-              echo "::error::Timed out waiting for the ci workflow to finish (head ${HEAD_SHA}). Make sure .github/workflows/ci.yml exists on the PR head." >&2
+              # 走到这里说明看过 run 但没等到它完成（等不到 run 有单独的 5 分钟分支），
+              # 所以文案指向 run 本身，而不是「ci.yml 不在 head 上」
+              echo "::error::Timed out waiting for the ci run to finish (head ${HEAD_SHA}${run_url:+, last seen run: ${run_url}}). Check the ci workflow status." >&2
               exit 1
             fi
 
