@@ -78,6 +78,16 @@ fn fallback_candidates(
         .collect()
 }
 
+/// 上游状态码 → 领域错误：5xx 是上游故障（502 upstream），
+/// 其余非成功状态按来源拒绝（422）处理——别把 Steam 宕机误导成「隐私设置问题」。
+fn http_error_for(endpoint: &str, status: reqwest::StatusCode) -> Error {
+    if status.is_server_error() {
+        Error::upstream(format!("{endpoint} 返回 HTTP {status}"))
+    } else {
+        Error::rejected(format!("{endpoint} 返回 HTTP {status}"))
+    }
+}
+
 /// 用户输入的 Steam ID 形态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdInput {
@@ -353,7 +363,7 @@ impl SteamClient {
             ));
         }
         if !status.is_success() {
-            return Err(Error::rejected(format!("GetOwnedGames 返回 HTTP {status}")));
+            return Err(http_error_for("GetOwnedGames", status));
         }
 
         let payload: OwnedGamesPayload = response.json().await.net()?;
@@ -439,9 +449,10 @@ impl SteamClient {
             ));
         }
         if !status.is_success() {
-            return Err(Error::rejected(format!(
-                "GetPlayerAchievements 返回 HTTP {status}（响应不是 JSON）"
-            )));
+            return Err(http_error_for(
+                "GetPlayerAchievements（响应不是 JSON）",
+                status,
+            ));
         }
         Err(Error::upstream(format!(
             "成就响应解析失败（前 80 字符: {}）",
@@ -494,7 +505,7 @@ impl SteamClient {
                 ));
             }
             if !status.is_success() {
-                return Err(Error::rejected(format!("愿望单接口返回 HTTP {status}")));
+                return Err(http_error_for("愿望单接口", status));
             }
 
             let body = response.text().await.net()?;
@@ -985,5 +996,23 @@ mod tests {
         assert!(err.to_string().contains("achievements.json"), "{err}");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 5xx 是上游故障（502 upstream），4xx 才是来源拒绝（422）：
+    /// 别把 Steam 宕机提示成「可能是隐私设置问题」。
+    #[test]
+    fn server_errors_are_upstream_not_rejected() {
+        assert!(matches!(
+            http_error_for("X", reqwest::StatusCode::BAD_GATEWAY),
+            Error::Upstream(_)
+        ));
+        assert!(matches!(
+            http_error_for("X", reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            Error::Upstream(_)
+        ));
+        assert!(matches!(
+            http_error_for("X", reqwest::StatusCode::FORBIDDEN),
+            Error::SourceRejected(_)
+        ));
     }
 }

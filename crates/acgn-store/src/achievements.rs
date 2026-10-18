@@ -33,6 +33,7 @@ pub struct AchievementOutcome {
 struct AchievementRow {
     status: String,
     progress_percent: Option<i64>,
+    started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
     achievements_achieved: Option<i64>,
     achievements_total: Option<i64>,
@@ -99,7 +100,7 @@ impl Db {
         now: DateTime<Utc>,
     ) -> Result<AchievementOutcome> {
         let entry: Option<AchievementRow> = sqlx::query_as(
-            "SELECT status, progress_percent, finished_at, achievements_achieved, achievements_total
+            "SELECT status, progress_percent, started_at, finished_at, achievements_achieved, achievements_total
              FROM library_entries WHERE game_id = ?",
         )
         .bind(game_id)
@@ -110,6 +111,7 @@ impl Db {
         let Some(AchievementRow {
             status: status_raw,
             progress_percent,
+            started_at,
             finished_at,
             achievements_achieved: previous_achieved,
             achievements_total: previous_total,
@@ -124,6 +126,7 @@ impl Db {
         let mut promoted = false;
         let mut next_status = status;
         let mut next_progress = progress_percent;
+        let mut next_started = started_at;
         let mut next_finished = finished_at;
 
         if let Some(progress) = progress
@@ -132,6 +135,8 @@ impl Db {
         {
             next_status = Status::Completed;
             next_progress.get_or_insert(100);
+            // 与手动切到「已通关」的语义一致：开始/完成时间都只在为空时补
+            next_started.get_or_insert(now);
             next_finished.get_or_insert(now);
             promoted = true;
         }
@@ -147,6 +152,7 @@ impl Db {
         // ——那是这个接口的记账字段，本来就该每次检查都更新。
         let changed = promoted
             || next_progress != progress_percent
+            || next_started != started_at
             || next_finished != finished_at
             || achieved != previous_achieved
             || total != previous_total;
@@ -154,13 +160,14 @@ impl Db {
         if changed {
             sqlx::query(
                 "UPDATE library_entries SET
-                    status = ?, progress_percent = ?, finished_at = ?,
+                    status = ?, progress_percent = ?, started_at = ?, finished_at = ?,
                     achievements_achieved = ?, achievements_total = ?, achievements_checked_at = ?,
                     updated_at = ?
                  WHERE game_id = ?",
             )
             .bind(next_status.as_str())
             .bind(next_progress)
+            .bind(next_started)
             .bind(next_finished)
             .bind(achieved)
             .bind(total)

@@ -98,6 +98,10 @@ async fn full_achievements_promote_playing_to_completed() {
     assert_eq!(entry.status, Status::Completed);
     assert_eq!(entry.progress_percent, Some(100));
     assert!(entry.finished_at.is_some(), "已通关应有完成时间");
+    assert!(
+        entry.started_at.is_some(),
+        "与手动切到已通关的语义一致：开始时间也要补"
+    );
     assert_eq!(entry.playtime_minutes, Some(120), "时长不受影响");
 
     // 再查一次全成就：已是已通关，不重复触发，也没有数据变化

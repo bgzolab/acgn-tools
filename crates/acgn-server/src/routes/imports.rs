@@ -336,7 +336,9 @@ pub async fn sync_steam_achievements(
                 added: 0,
                 updated,
                 unchanged,
-                skipped: unavailable + failed,
+                // skipped 在其它模式里是「被选项过滤」，这里只计真失败；
+                // 该账号没有的条目（unavailable）只体现在 warnings 文案里
+                skipped: failed,
                 missing: 0,
             },
             &warnings,

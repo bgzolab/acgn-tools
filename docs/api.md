@@ -180,6 +180,8 @@ and is retried on the next click. Five consecutive failures stop the run (system
 protection) and are reported in `warnings`.
 
 - Recorded in the run history as `steam_achievements` (also when the run stops early / fails).
+  In this mode `skipped` counts request failures only — entries the account does not own are
+  normal answers and appear in the warnings, not in `skipped`.
 
 ### POST /api/imports
 
