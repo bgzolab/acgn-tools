@@ -430,7 +430,7 @@ impl SteamClient {
         // 所以先把 body 当载荷解析；只有「不是 JSON」时才按状态码报错。
         let body = response.text().await.net()?;
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
-            return Ok(parse_player_achievements(&value));
+            return parse_player_achievements(&value);
         }
 
         if matches!(status.as_u16(), 401 | 403) {

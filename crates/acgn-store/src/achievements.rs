@@ -140,24 +140,42 @@ impl Db {
             None => (previous_achieved, previous_total),
         };
 
-        sqlx::query(
-            "UPDATE library_entries SET
-                status = ?, progress_percent = ?, finished_at = ?,
-                achievements_achieved = ?, achievements_total = ?, achievements_checked_at = ?,
-                updated_at = ?
-             WHERE game_id = ?",
-        )
-        .bind(next_status.as_str())
-        .bind(next_progress)
-        .bind(next_finished)
-        .bind(achieved)
-        .bind(total)
-        .bind(now)
-        .bind(now)
-        .bind(game_id)
-        .execute(&self.pool)
-        .await
-        .db()?;
+        // 只有真的发生变化才写整行并刷新 `updated_at`（§4.4：静默写入会让前端的
+        // 「更新于 …」一直漂移）。没变化时只推进成就轮询时钟 `achievements_checked_at`
+        // ——那是这个接口的记账字段，本来就该每次检查都更新。
+        let changed = promoted
+            || next_progress != progress_percent
+            || next_finished != finished_at
+            || achieved != previous_achieved
+            || total != previous_total;
+
+        if changed {
+            sqlx::query(
+                "UPDATE library_entries SET
+                    status = ?, progress_percent = ?, finished_at = ?,
+                    achievements_achieved = ?, achievements_total = ?, achievements_checked_at = ?,
+                    updated_at = ?
+                 WHERE game_id = ?",
+            )
+            .bind(next_status.as_str())
+            .bind(next_progress)
+            .bind(next_finished)
+            .bind(achieved)
+            .bind(total)
+            .bind(now)
+            .bind(now)
+            .bind(game_id)
+            .execute(&self.pool)
+            .await
+            .db()?;
+        } else {
+            sqlx::query("UPDATE library_entries SET achievements_checked_at = ? WHERE game_id = ?")
+                .bind(now)
+                .bind(game_id)
+                .execute(&self.pool)
+                .await
+                .db()?;
+        }
 
         Ok(AchievementOutcome { promoted })
     }

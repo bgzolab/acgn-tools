@@ -249,7 +249,7 @@ Three paths, chosen automatically:
   still advance the polling clock so they cannot block the queue.
 - Poll order is `achievements_checked_at` null-first, then oldest-first (rotating refreshes),
   and the response reports `pending` (never checked) so the UI can offer "click again to
-  continue". Checking is paced at 3 concurrent + a 150 ms gap (~10 games/s); HTTP 429 stops the
+  continue". Checking is paced at 2 concurrent + a 250 ms gap (~8 games/s); HTTP 429 stops the
   run gracefully and already-processed entries stay committed.
 - Full achievements promote `wishlist` / `backlog` / `playing` to `completed`; user-set
   `completed` / `on_hold` / `dropped` / `ignored` are never reverted.

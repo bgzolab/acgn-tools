@@ -78,13 +78,16 @@ impl OwnedGamesPayload {
 ///   状态收养规则会把仍是愿望单/待玩的条目升级过来，但用户手动标过的状态
 ///   （已通关、搁置……）不会被回退；
 /// * `playtime_minutes` 带上 Steam 的累计时长（存储层按「手动优先」规则采纳）。
+///   字段缺失时按 0 处理：`source_playtime_minutes` 同时是「被库存同步见过」的
+///   标记（missing / 成就轮询都依赖它），不能留 NULL。
 ///
 /// 名字缺失时 **不** 造 `Steam App <appid>` 占位符：标题属于「来源给了值才覆盖」的
 /// 元数据，占位符会在下次导入时覆盖掉补全好的真实标题；空标题会被存储层保留本地值。
 pub fn owned_game_to_source_item(game: &OwnedGame) -> SourceItem {
     let appid = game.appid.to_string();
-    // 「玩过」的判定只看累计时长：0 分钟 = 买了没玩（待玩）
-    let status = if game.playtime_forever.unwrap_or(0) > 0 {
+    // 「玩过」的判定只看累计时长：缺字段 / 0 分钟 = 买了没玩（待玩）
+    let playtime = game.playtime_forever.unwrap_or(0);
+    let status = if playtime > 0 {
         Status::Playing
     } else {
         Status::Backlog
@@ -98,7 +101,7 @@ pub fn owned_game_to_source_item(game: &OwnedGame) -> SourceItem {
         cover_url: Some(header_url(&appid)),
         poster_url: Some(poster_url(&appid)),
         status: Some(status),
-        playtime_minutes: game.playtime_forever,
+        playtime_minutes: Some(playtime),
         metadata: serde_json::to_value(game).ok(),
         // 库存接口只有 appid / 名字 / 时长，属于「列表档」
         metadata_level: MetadataLevel::List,
@@ -149,6 +152,17 @@ mod tests {
         assert_eq!(item.title, "");
         assert_eq!(item.playtime_minutes, Some(0));
         assert_eq!(item.status, Some(Status::Backlog), "没玩过的算待玩");
+
+        // 载荷缺 playtime_forever（fixture 简化形态 / Steam 改字段）时按 0 处理：
+        // source_playtime_minutes 是「被库存同步见过」的标记，不能留 NULL
+        let no_playtime = OwnedGame {
+            appid: 400,
+            name: Some("No Data".to_string()),
+            ..Default::default()
+        };
+        let item = owned_game_to_source_item(&no_playtime);
+        assert_eq!(item.playtime_minutes, Some(0));
+        assert_eq!(item.status, Some(Status::Backlog));
     }
 
     /// 隐私受限（`{"response":{}}`）与「库存为空」必须区分：

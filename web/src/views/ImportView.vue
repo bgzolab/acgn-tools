@@ -331,7 +331,7 @@ onMounted(() => {
         <div class="field">
           <span class="label">成就检查（全成就 → 已通关）</span>
           <div class="hint" style="margin-bottom: 8px">
-            逐游戏检查成就进度（约 10 个/秒）；全成就的条目会标记为「已通关」，
+            逐游戏检查成就进度（约 8 个/秒）；全成就的条目会标记为「已通关」，
             你手动标过的状态不会被回退。进度是「某个账号的」，使用上面的 SteamID
           </div>
           <div class="row">

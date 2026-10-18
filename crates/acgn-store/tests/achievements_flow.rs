@@ -163,6 +163,7 @@ async fn unavailable_achievements_keep_progress_and_refresh_checked_at() {
     mark_checked(&db, "3200", 3, 10).await;
 
     let before = get(&db, "3200").await.entry.achievements_checked_at;
+    let updated_before = get(&db, "3200").await.entry.updated_at;
     let id = get(&db, "3200").await.game.id;
     let later = chrono::Utc::now() + chrono::Duration::seconds(5);
     db.update_achievements(id, None, later).await.unwrap();
@@ -171,7 +172,59 @@ async fn unavailable_achievements_keep_progress_and_refresh_checked_at() {
     assert_eq!(entry.achievements_achieved, Some(3), "取不到时保留旧进度");
     assert_eq!(entry.achievements_total, Some(10));
     assert!(entry.achievements_checked_at > before, "检查时间要刷新");
+    assert_eq!(
+        entry.updated_at, updated_before,
+        "取不到且没有变化时不得刷新 updated_at（§4.4）"
+    );
     assert_eq!(entry.status, Status::Playing, "取不到不能改状态");
+}
+
+/// 同样的进度再查一遍：只推进轮询时钟，不碰 `updated_at`（否则整个库存轮询一遍
+/// 会让所有「更新于 …」集体漂移）。
+#[tokio::test]
+async fn unchanged_checks_only_touch_the_poll_clock() {
+    let db = setup().await;
+    import_library(&db, &[library_item("3400", "Stable", 10)]).await;
+    mark_checked(&db, "3400", 3, 10).await;
+
+    let before = get(&db, "3400").await.entry;
+    let id = before.game_id;
+    let later = chrono::Utc::now() + chrono::Duration::seconds(5);
+    db.update_achievements(
+        id,
+        Some(AchievementProgress {
+            achieved: 3,
+            total: 10,
+        }),
+        later,
+    )
+    .await
+    .unwrap();
+
+    let after = get(&db, "3400").await.entry;
+    assert_eq!(
+        after.updated_at, before.updated_at,
+        "无变化不应改 updated_at"
+    );
+    assert!(
+        after.achievements_checked_at > before.achievements_checked_at,
+        "轮询时钟仍要推进"
+    );
+
+    // 进度真的变了（3 → 4）：这次要写 updated_at
+    db.update_achievements(
+        id,
+        Some(AchievementProgress {
+            achieved: 4,
+            total: 10,
+        }),
+        later,
+    )
+    .await
+    .unwrap();
+    let changed = get(&db, "3400").await.entry;
+    assert_eq!(changed.achievements_achieved, Some(4));
+    assert!(changed.updated_at >= later, "有变化时应刷新 updated_at");
 }
 
 #[tokio::test]
