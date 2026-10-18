@@ -1,8 +1,8 @@
 //! 游戏列表 / 详情 / 编辑 / 单条元数据刷新。
 
 use acgn_core::{
-    DeleteGamesRequest, DeleteGamesResponse, EntryPatch, Error, GameListQuery, GameWithEntry, Page,
-    Source,
+    DeleteGamesRequest, DeleteGamesResponse, EntryPatch, Error, GameListQuery, GameWithEntry,
+    MAX_BATCH_DELETE, Page, Source,
 };
 use acgn_store::GameFilters;
 use axum::Json;
@@ -74,8 +74,10 @@ pub async fn delete_games(
     if request.ids.is_empty() {
         return Err(ApiError(Error::invalid("ids 不能为空")));
     }
-    if request.ids.len() > 1000 {
-        return Err(ApiError(Error::invalid("一次最多删除 1000 条")));
+    if request.ids.len() > MAX_BATCH_DELETE {
+        return Err(ApiError(Error::invalid(format!(
+            "一次最多删除 {MAX_BATCH_DELETE} 条"
+        ))));
     }
 
     let deleted = state.db.delete_games(&request.ids).await?;

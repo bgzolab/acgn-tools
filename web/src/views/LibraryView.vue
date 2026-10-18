@@ -67,7 +67,6 @@ async function deleteSelected() {
     const { deleted } = await deleteGames(ids);
     pushToast("ok", "已删除", `本地移除了 ${deleted} 条；来源里还在的下次导入会重新加回来`);
     selectedIds.value = new Set();
-    deleteArmed.value = false;
     await store.load();
     // 删空当前页时回退一页
     if (store.filters.page > Math.max(1, store.totalPages)) store.goPage(store.totalPages);
@@ -76,6 +75,8 @@ async function deleteSelected() {
     pushToast("err", title, message);
   } finally {
     deleting.value = false;
+    // 无论成败都回到未武装态：每次确认都必须重新经过两段确认
+    deleteArmed.value = false;
   }
 }
 
