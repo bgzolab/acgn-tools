@@ -139,6 +139,10 @@ the wishlist import:
   `entry.source_playtime_minutes`, and `entry.playtime_minutes` follows it while the user has
   not edited it by hand. A manual value wins on every later sync; `PATCH playtime_minutes: -1`
   (or the "adopt Steam playtime" button) restores following.
+- If every imported game shows playtime `0`, the account has *"Always keep my total playtime
+  private"* enabled (a checkbox under the Game-details privacy setting) — ownership is still
+  imported. `playtime_2weeks` / `rtime_last_played` may also be absent unless the profile is
+  the API key's owner; they are optional fields.
 
 ### POST /api/imports
 

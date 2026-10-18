@@ -112,7 +112,8 @@ mod tests {
                     "playtime_forever": 4621,
                     "playtime_2weeks": 0,
                     "rtime_last_played": 1760000000,
-                    "img_icon_url": "abc123"
+                    "img_icon_url": "abc123",
+                    "content_descriptorids": [1, 5]
                 },
                 { "appid": 570, "playtime_forever": 0 }
             ]

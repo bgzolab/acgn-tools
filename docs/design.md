@@ -219,6 +219,11 @@ Three paths, chosen automatically:
   carried in `SourceItem.playtime_minutes` and merged per §4.5.
 - One request covers the whole library, so there is no pagination or rate-limit dance; the
   expensive part remains metadata enrichment.
+- Playtime caveat (verified 2026-10): Steam returns `playtime_forever: 0` for every owned game
+  when the account enabled *"Always keep my total playtime private"* (a checkbox under the
+  Game-details privacy setting); ownership is still listed normally. `playtime_2weeks` /
+  `rtime_last_played` are only returned when the queried profile is the API key's owner —
+  they are optional everywhere in the client.
 - The fixture generator writes `library.json` with deterministic demo playtimes
   (`--library-only` regenerates it from the existing `wishlist.json` without touching the
   network). Real playtimes need a real key and profile.
