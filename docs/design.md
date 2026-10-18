@@ -241,12 +241,14 @@ Three paths, chosen automatically:
   (GET → 405, GET-style POST → 411/401, JSON body → 401). So the check is a separate on-demand
   action (`POST /api/imports/steam/achievements`, run mode `steam_achievements`), not part of
   every library sync.
-- Three response shapes are distinguished (the HTTP status is not the signal — 400/403 carry
-  a JSON answer): `success: true` + achievements (progress), `success: true` without the array
-  (the game has no achievement set → `0/0`), `error: "Requested app has no stats"` (HTTP 400 →
-  also `0/0`), and `error: "Profile is not public"` (HTTP 403 — not owned or hidden → no data).
-  Only the last one is treated as unavailable; such entries keep their previous progress and
-  still advance the polling clock so they cannot block the queue.
+- The response shapes are distinguished by payload, not by HTTP status (400/403 carry a JSON
+  answer): `success: true` + achievements (progress), `success: true` without the array (the
+  game has no achievement set → `0/0`), `error: "Requested app has no stats"` (HTTP 400 → also
+  `0/0`), and `error: "Profile is not public"` (HTTP 403 — not owned or hidden → no data). A
+  known key-failure message maps to a rejected error (422); anything unknown maps to an
+  upstream error (502), so one weird payload cannot silently spin the whole poll. Unavailable
+  entries keep their previous progress and still advance the polling clock, so they cannot
+  block the queue.
 - Poll order is `achievements_checked_at` null-first, then oldest-first (rotating refreshes),
   and the response reports `pending` (never checked) so the UI can offer "click again to
   continue". Checking is paced at 2 concurrent + a 250 ms gap (~8 games/s); HTTP 429 stops the

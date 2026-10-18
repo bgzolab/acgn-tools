@@ -63,13 +63,23 @@ const sourcePlaytimeLabel = computed(() =>
 );
 
 const playtimeHint = computed(() => {
-  const minutes = Number.parseInt(playtimeMinutes.value, 10);
+  const raw = playtimeMinutes.value.trim();
   const source = sourcePlaytime.value;
-  if (!Number.isFinite(minutes) || minutes <= 0) {
+  if (raw === "") {
     if (source !== null) {
       return `留空并保存 = 恢复跟随 Steam 时长（${sourcePlaytimeLabel.value}）`;
     }
     return "留空并保存可清空时长";
+  }
+  const minutes = Number.parseInt(raw, 10);
+  if (!Number.isFinite(minutes) || minutes < 0) {
+    return "请填写非负整数（分钟），或留空以清空";
+  }
+  if (minutes === 0) {
+    // 0 是「手动记 0 分钟」，不是「恢复跟随」：两条路的语义不同，提示要写清楚
+    return source !== null
+      ? "保存 0 = 手动记为 0 分钟（不再跟随 Steam）"
+      : "保存 0 = 手动记为 0 分钟";
   }
   const base = `≈ ${(minutes / 60).toFixed(1)} 小时`;
   if (source !== null && minutes !== source) {
