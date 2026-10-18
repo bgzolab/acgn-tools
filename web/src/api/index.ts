@@ -2,6 +2,7 @@
 
 import { API_BASE, http } from "./http";
 import type {
+  AchievementSyncSummary,
   EnrichSummary,
   EntryPatch,
   Game,
@@ -65,6 +66,14 @@ export interface SteamImportBody {
 
 export const importSteamWishlist = (body: SteamImportBody) =>
   http.post<ImportResponse>("/imports/steam/wishlist", body);
+
+/** 导入 Steam 库存（已拥有游戏 + 游玩时长）；需要后端配置 STEAM_API_KEY */
+export const importSteamLibrary = (body: SteamImportBody) =>
+  http.post<ImportResponse>("/imports/steam/library", body);
+
+/** 检查成就进度：全成就的游戏标记为「已通关」（逐游戏查询，可分批） */
+export const syncSteamAchievements = (body: { steam_id: string; limit?: number }) =>
+  http.post<AchievementSyncSummary>("/imports/steam/achievements", body);
 
 export interface JsonImportBody {
   items: unknown[];

@@ -5,10 +5,15 @@
 //! 1. **元数据**（标题、封面、价格、评价……）以来源为准，来源给了值就覆盖；
 //!    来源没给值则保留本地已有的值（`None` 不算覆盖）。
 //! 2. **个人状态**（`status` / `rating` / `note` / 进度 / 时长）永远以本地为准。
-//!    只有当本地状态还是「愿望单」且来源要求其它状态时，才会跟随来源——
-//!    也就是说「你把某游戏标成在玩/已通关后，再同步愿望单不会把它打回去」。
-//! 3. 来源里消失的条目 **不会被删除**，只统计 `missing` 并给出提示。
-//! 4. 每次导入都写一条 `import_runs`，失败也会落库（便于排查）。
+//!    只有当本地状态还是「愿望单 / 待玩」（用户还没表态过）时，才会跟随来源声明的
+//!    状态——也就是说「你把某游戏标成在玩/已通关后，再同步愿望单不会把它打回去」。
+//!    库存导入据此把“有游玩时长”的条目从愿望单/待玩升级为「在玩」。
+//! 3. **游玩时长**是半例外：来源值记录进 `source_playtime_minutes`，而展示值
+//!    `playtime_minutes` 只在本地没有手填过（为空或仍等于上次来源值）时跟随来源；
+//!    用户手改过就保留本地（见 `plan_merge` 的注释与 `docs/design.md` §4.5）。
+//! 4. 来源里消失的条目 **不会被删除**，只统计 `missing` 并给出提示；
+//!    `missing` 的候选集按 [`MissingScope`] 区分（愿望单 / 库存）。
+//! 5. 每次导入都写一条 `import_runs`，失败也会落库（便于排查）。
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -38,6 +43,22 @@ pub struct ImportRequest<'a> {
     pub source_mode: &'a str,
     /// 抓取阶段产生的告警（会一并写进运行记录）
     pub extra_warnings: Vec<String>,
+    /// `missing` 的统计口径（愿望单导入与库存导入看见的「来源」不同）
+    pub missing_scope: MissingScope,
+}
+
+/// `missing`（来源里消失的条目）的候选口径。
+///
+/// 愿望单导入只对「上次还在愿望单」的条目负责；库存导入只对「上次被库存同步见过」
+/// 的条目负责。两者不能混用：拿愿望单的候选集去做库存导入，会把所有未拥有的愿望单
+/// 条目误报成 missing，反之亦然。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissingScope {
+    /// 上次还在愿望单的条目（`steam_wishlist` / JSON 导入）
+    #[default]
+    Wishlist,
+    /// 上次被库存同步见过的条目（以 `library_entries.source_playtime_minutes` 为标记）
+    Library,
 }
 
 /// 运行记录的计数（供 enrich 等非导入场景复用）。
@@ -246,16 +267,29 @@ impl Db {
     async fn import_items_inner(&self, req: &ImportRequest<'_>) -> Result<ImportSummary> {
         let now = Utc::now();
 
-        // 导入前处于「愿望单」的条目，用来计算「这次不见了」的 missing。
-        let previous: Vec<(String, i64)> = sqlx::query_as::<_, (String, i64)>(
-            "SELECT g.external_id, g.id FROM games g
-             JOIN library_entries e ON e.game_id = g.id
-             WHERE g.source = ? AND e.status = 'wishlist'",
-        )
-        .bind(req.source.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .db()?;
+        // 导入前「来源一侧」的条目，用来计算「这次不见了」的 missing。
+        // 口径按导入类型区分（见 MissingScope 的说明），不能一套 SQL 用到底。
+        let previous: Vec<(String, i64)> = match req.missing_scope {
+            MissingScope::Wishlist => sqlx::query_as::<_, (String, i64)>(
+                "SELECT g.external_id, g.id FROM games g
+                 JOIN library_entries e ON e.game_id = g.id
+                 WHERE g.source = ? AND e.status = 'wishlist'",
+            )
+            .bind(req.source.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .db()?,
+            // 被库存同步见过的标记：source_playtime_minutes 非空（0 也算见过）
+            MissingScope::Library => sqlx::query_as::<_, (String, i64)>(
+                "SELECT g.external_id, g.id FROM games g
+                 JOIN library_entries e ON e.game_id = g.id
+                 WHERE g.source = ? AND e.source_playtime_minutes IS NOT NULL",
+            )
+            .bind(req.source.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .db()?,
+        };
         let mut previous: HashMap<String, i64> = previous.into_iter().collect();
 
         let mut summary = ImportSummary {
@@ -304,7 +338,7 @@ impl Db {
                 }
             }
             summary.missing = previous.len() as i64;
-            push_missing_warning(&mut summary, &previous);
+            push_missing_warning(&mut summary, &previous, req.missing_scope);
             return Ok(summary);
         }
 
@@ -331,7 +365,7 @@ impl Db {
         }
         tx.commit().await.db()?;
 
-        push_missing_warning(&mut summary, &previous);
+        push_missing_warning(&mut summary, &previous, req.missing_scope);
         summary.sample_ids.truncate(24);
         summary.sample_ids.sort_unstable();
         summary.sample_ids.dedup();
@@ -686,6 +720,10 @@ fn plan_restore(
         rating: None,
         progress_percent: None,
         playtime_minutes: None,
+        source_playtime_minutes: None,
+        achievements_achieved: None,
+        achievements_total: None,
+        achievements_checked_at: None,
         note: None,
         source_added_at: None,
         started_at: None,
@@ -748,14 +786,22 @@ fn restore_changed(previous: &GameWithEntry, game: &Game, entry: &LibraryEntry) 
 }
 
 /// 「来源里消失了」的告警：预览与真实导入共用同一段文案，避免两边说法不一致。
-fn push_missing_warning(summary: &mut ImportSummary, previous: &HashMap<String, i64>) {
+fn push_missing_warning(
+    summary: &mut ImportSummary,
+    previous: &HashMap<String, i64>,
+    scope: MissingScope,
+) {
     summary.missing = previous.len() as i64;
     if summary.missing == 0 {
         return;
     }
     let preview: Vec<String> = previous.values().take(5).map(|id| id.to_string()).collect();
+    let reason = match scope {
+        MissingScope::Wishlist => "（可能已购买 / 被移出愿望单）",
+        MissingScope::Library => "（可能已退款 / 移出库存 / 家庭共享失效）",
+    };
     summary.warnings.push(format!(
-        "{} 个条目已不在来源中（可能已购买 / 被移出愿望单），本地保留未删除：#{}",
+        "{} 个条目已不在来源中{reason}，本地保留未删除：#{}",
         summary.missing,
         preview.join(", #")
     ));
@@ -844,13 +890,40 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
         entry.priority = Some(priority);
         entry_changed = true;
     }
-    // 本地状态是权威：只有仍停留在「愿望单」时才跟随来源的初始状态。
-    if entry.status == Status::Wishlist
+    // 本地状态是权威：只有「用户还没表态过」的两档（愿望单 / 待玩）才跟随来源，
+    // 且来源不能把条目打回愿望单。用户手动标过的在玩/已通关/搁置/弃坑/忽略永不回退。
+    //
+    // 库存导入靠这条把「有游玩时长」的已拥有游戏升级为在玩：适配器给出
+    // `status = playing`，仍在愿望单/待玩的条目会跟随，已通关之类的则保持本地值。
+    if matches!(entry.status, Status::Wishlist | Status::Backlog)
         && let Some(status) = item.status
         && status != Status::Wishlist
+        && entry.status != status
     {
         entry.status = status;
+        // 与手动 PATCH 对齐：切到在玩/已通关时补时间戳（否则「在玩」没有开始时间）
+        apply_status_side_effects(&mut entry, now);
         entry_changed = true;
+    }
+
+    // 游玩时长：来源值是「测量结果」，但本地手填的值优先。
+    //
+    // * `source_playtime_minutes` 始终记录来源报告的值（含 0），用于展示与判定；
+    // * `playtime_minutes`（展示 / 统计用）在「本地没手改过」时跟随来源——为空，
+    //   或仍等于上次来源值；一旦两者不同（用户手填 / 其它平台时长）就保留本地，
+    //   直到用户清空或用「采用 Steam 时长」恢复跟随。
+    if let Some(playtime) = item.playtime_minutes {
+        let previous_source = entry.source_playtime_minutes;
+        if previous_source != Some(playtime) {
+            entry.source_playtime_minutes = Some(playtime);
+            entry_changed = true;
+        }
+        if (entry.playtime_minutes.is_none() || entry.playtime_minutes == previous_source)
+            && entry.playtime_minutes != Some(playtime)
+        {
+            entry.playtime_minutes = Some(playtime);
+            entry_changed = true;
+        }
     }
 
     if entry_changed {
@@ -865,6 +938,26 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
         metadata_json_changed,
         entry_changed,
     })
+}
+
+/// 状态切换的附带写入（与手动 PATCH 同一套语义）：
+/// 在玩 → 补开始时间、清完成时间；已通关 → 补开始/完成时间与 100% 进度。
+/// 导入收养（[`plan_merge`]）与 `Db::update_entry` 共用，避免两条路语义漂移。
+pub(crate) fn apply_status_side_effects(entry: &mut LibraryEntry, now: DateTime<Utc>) {
+    match entry.status {
+        Status::Playing => {
+            entry.started_at.get_or_insert(now);
+            entry.finished_at = None;
+        }
+        Status::Completed => {
+            entry.started_at.get_or_insert(now);
+            entry.finished_at = Some(now);
+            if entry.progress_percent.is_none() {
+                entry.progress_percent = Some(100);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `metadata_json` 的比较。
@@ -1077,14 +1170,20 @@ fn game_from_item(item: &SourceItem, now: DateTime<Utc>, metadata_stamp: bool) -
 }
 
 fn new_entry(game_id: i64, item: &SourceItem, now: DateTime<Utc>) -> LibraryEntry {
-    LibraryEntry {
+    let mut entry = LibraryEntry {
         game_id,
         status: item.status.unwrap_or(Status::Wishlist),
         priority: item.priority,
         favorite: false,
         rating: None,
         progress_percent: None,
-        playtime_minutes: None,
+        // 新条目尚不存在「本地手填值」：有效时长直接跟随来源
+        playtime_minutes: item.playtime_minutes,
+        source_playtime_minutes: item.playtime_minutes,
+        // 成就进度由独立的成就同步写入，导入时保持未知
+        achievements_achieved: None,
+        achievements_total: None,
+        achievements_checked_at: None,
         note: None,
         source_added_at: item.source_added_at,
         started_at: None,
@@ -1092,7 +1191,11 @@ fn new_entry(game_id: i64, item: &SourceItem, now: DateTime<Utc>) -> LibraryEntr
         last_synced_at: Some(now),
         created_at: now,
         updated_at: now,
-    }
+    };
+    // 与手动 PATCH / 收养路径共用同一套附带写入：首次落库就带「在玩 / 已通关」
+    // 的条目也要有开始时间（JSON 导入声明 completed 时同理补完成时间与进度）
+    apply_status_side_effects(&mut entry, now);
+    entry
 }
 
 async fn load_in_tx(
@@ -1247,9 +1350,11 @@ async fn update_game_in_tx(
 async fn insert_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -> Result<()> {
     sqlx::query(
         "INSERT INTO library_entries (
-            game_id, status, priority, favorite, rating, progress_percent, playtime_minutes, note,
-            source_added_at, started_at, finished_at, last_synced_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            game_id, status, priority, favorite, rating, progress_percent, playtime_minutes,
+            source_playtime_minutes, achievements_achieved, achievements_total,
+            achievements_checked_at, note, source_added_at, started_at, finished_at,
+            last_synced_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(entry.game_id)
     .bind(entry.status.as_str())
@@ -1258,6 +1363,10 @@ async fn insert_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     .bind(entry.rating)
     .bind(entry.progress_percent)
     .bind(entry.playtime_minutes)
+    .bind(entry.source_playtime_minutes)
+    .bind(entry.achievements_achieved)
+    .bind(entry.achievements_total)
+    .bind(entry.achievements_checked_at)
     .bind(entry.note.clone())
     .bind(entry.source_added_at)
     .bind(entry.started_at)
@@ -1275,7 +1384,9 @@ async fn update_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     sqlx::query(
         "UPDATE library_entries SET
             status = ?, priority = ?, favorite = ?, rating = ?, progress_percent = ?,
-            playtime_minutes = ?, note = ?, source_added_at = ?, started_at = ?, finished_at = ?,
+            playtime_minutes = ?, source_playtime_minutes = ?,
+            achievements_achieved = ?, achievements_total = ?, achievements_checked_at = ?,
+            note = ?, source_added_at = ?, started_at = ?, finished_at = ?,
             last_synced_at = ?, updated_at = ?
          WHERE game_id = ?",
     )
@@ -1285,6 +1396,10 @@ async fn update_entry_in_tx(conn: &mut SqliteConnection, entry: &LibraryEntry) -
     .bind(entry.rating)
     .bind(entry.progress_percent)
     .bind(entry.playtime_minutes)
+    .bind(entry.source_playtime_minutes)
+    .bind(entry.achievements_achieved)
+    .bind(entry.achievements_total)
+    .bind(entry.achievements_checked_at)
     .bind(entry.note.clone())
     .bind(entry.source_added_at)
     .bind(entry.started_at)

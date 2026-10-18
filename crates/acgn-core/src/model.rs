@@ -307,7 +307,16 @@ pub struct LibraryEntry {
     /// 0..=10，10 最好
     pub rating: Option<i64>,
     pub progress_percent: Option<i64>,
+    /// 展示 / 统计用的有效时长（分钟）。默认跟随来源，用户手填后以本地为准。
     pub playtime_minutes: Option<i64>,
+    /// 最近一次来源导入报告的时长（分钟，Steam `playtime_forever`）。
+    /// 用来判断 `playtime_minutes` 是否已被用户手改，以及展示「Steam 记录」。
+    pub source_playtime_minutes: Option<i64>,
+    /// 最近一次检查到的成就进度（`achieved` / `total`）；`total = 0` 表示该游戏没有成就集
+    pub achievements_achieved: Option<i64>,
+    pub achievements_total: Option<i64>,
+    /// 最近一次检查成就的时间（轮询用：最久没查过的优先）
+    pub achievements_checked_at: Option<DateTime<Utc>>,
     pub note: Option<String>,
     /// 来源侧「加入时间」（Steam wishlist 的 added）
     pub source_added_at: Option<DateTime<Utc>>,

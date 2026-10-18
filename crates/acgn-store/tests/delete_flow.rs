@@ -4,7 +4,7 @@
 //! 级联清掉个人状态、不写导入历史、来源里仍在的条目下次导入会重新加回来。
 
 use acgn_core::{ImportOptions, ImportSummary, MediaKind, Source, SourceItem};
-use acgn_store::{Db, GameFilters, ImportRequest};
+use acgn_store::{Db, GameFilters, ImportRequest, MissingScope};
 
 /// 内存库 + 迁移。
 async fn setup() -> Db {
@@ -32,6 +32,7 @@ async fn import(db: &Db, items: &[SourceItem]) -> ImportSummary {
         args: None,
         source_mode: "test",
         extra_warnings: Vec::new(),
+        missing_scope: MissingScope::Wishlist,
     })
     .await
     .expect("导入不应失败")

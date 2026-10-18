@@ -9,18 +9,23 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use acgn_core::{Error, Result, SourceItem};
+use acgn_core::{AchievementProgress, Error, Result, SourceItem};
 use futures::future::join_all;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use tracing::{debug, warn};
 
+use crate::achievements::parse_player_achievements;
 use crate::appdetails::parse_app_details;
 use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
+use crate::library::{OwnedGamesPayload, owned_game_to_source_item};
 use crate::util::extract_xml_tag;
 use crate::wishlist::{WishlistPayload, wishlist_to_source_item};
-use crate::{app_details_url, official_wishlist_url, public_wishlist_url, vanity_resolve_url};
+use crate::{
+    app_details_url, official_wishlist_url, owned_games_url, player_achievements_url,
+    public_wishlist_url, vanity_resolve_url,
+};
 
 /// 愿望单最多翻多少页（每页约 100 条，足够 6000 个愿望）。
 const MAX_WISHLIST_PAGES: u32 = 60;
@@ -71,6 +76,16 @@ fn fallback_candidates(
         .filter(|appid| !primary.contains_key(*appid))
         .cloned()
         .collect()
+}
+
+/// 上游状态码 → 领域错误：5xx 是上游故障（502 upstream），
+/// 其余非成功状态按来源拒绝（422）处理——别把 Steam 宕机误导成「隐私设置问题」。
+fn http_error_for(endpoint: &str, status: reqwest::StatusCode) -> Error {
+    if status.is_server_error() {
+        Error::upstream(format!("{endpoint} 返回 HTTP {status}"))
+    } else {
+        Error::rejected(format!("{endpoint} 返回 HTTP {status}"))
+    }
 }
 
 /// 用户输入的 Steam ID 形态。
@@ -136,9 +151,9 @@ pub struct AppDetailsBatch {
     pub last_error: Option<Error>,
 }
 
-/// 一次愿望单抓取的结果。
+/// 一次抓取的结果（愿望单 / 库存共用）。
 #[derive(Debug, Clone)]
-pub struct WishlistFetch {
+pub struct ImportFetch {
     /// 解析后的 steamID64
     pub steam_id: String,
     pub items: Vec<SourceItem>,
@@ -228,7 +243,7 @@ impl SteamClient {
     }
 
     /// 抓取愿望单：公开接口优先，失败且配了 Key 就回退官方接口。
-    pub async fn fetch_wishlist(&self, input: &str) -> Result<WishlistFetch> {
+    pub async fn fetch_wishlist(&self, input: &str) -> Result<ImportFetch> {
         let (steam_id, resolved_via, mut warnings) = self.resolve_id(input).await?;
 
         if let Some(fixture) = &self.fixture {
@@ -242,7 +257,7 @@ impl SteamClient {
                 items.len(),
                 fixture.wishlist_path.display()
             ));
-            return Ok(WishlistFetch {
+            return Ok(ImportFetch {
                 steam_id,
                 items,
                 warnings,
@@ -254,7 +269,7 @@ impl SteamClient {
         match self.fetch_public_wishlist(&steam_id).await {
             Ok((items, mut extra)) => {
                 warnings.append(&mut extra);
-                Ok(WishlistFetch {
+                Ok(ImportFetch {
                     steam_id,
                     items,
                     warnings,
@@ -279,7 +294,7 @@ impl SteamClient {
                     "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取名称/价格/简介"
                         .to_string(),
                 );
-                Ok(WishlistFetch {
+                Ok(ImportFetch {
                     steam_id,
                     items,
                     warnings,
@@ -288,6 +303,162 @@ impl SteamClient {
                 })
             }
         }
+    }
+
+    /// 抓取库存（已拥有游戏 + 游玩时长）。
+    ///
+    /// 与愿望单不同，官方 `GetOwnedGames` 接口 **不接受匿名调用**（实测 401），
+    /// 因此除 fixture 外必须配置 `STEAM_API_KEY`；同时要求「游戏详情」对所有人可见，
+    /// 否则 Steam 返回空对象。两者都要给出可操作的错误提示。
+    pub async fn fetch_library(&self, input: &str) -> Result<ImportFetch> {
+        let (steam_id, resolved_via, mut warnings) = self.resolve_id(input).await?;
+
+        if let Some(fixture) = &self.fixture {
+            let Some(path) = fixture.library_path.as_ref().filter(|path| path.exists()) else {
+                return Err(Error::rejected(
+                    "离线 fixture 未提供 library.json：无法演示库存导入（重新生成 fixture 或改用真实网络）",
+                ));
+            };
+            let games = fixture.library_games();
+            let items: Vec<SourceItem> = games.iter().map(owned_game_to_source_item).collect();
+            warnings.push(format!(
+                "离线 fixture 模式：{} 个条目来自 {}",
+                items.len(),
+                path.display()
+            ));
+            return Ok(ImportFetch {
+                steam_id,
+                items,
+                warnings,
+                source_mode: "fixture",
+                resolved_via: "fixture",
+            });
+        }
+
+        let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) else {
+            return Err(Error::invalid(
+                "导入 Steam 库存需要 API Key（官方 GetOwnedGames 接口不允许匿名调用）：\
+                 请设置 STEAM_API_KEY 后重启服务，并确认「游戏详情」隐私为公开",
+            ));
+        };
+
+        let url = owned_games_url(api_key, &steam_id, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(Error::rejected(
+                "Steam 拒绝了库存请求：API Key 无效或已过期（到 https://steamcommunity.com/dev/apikey 重新申请）",
+            ));
+        }
+        if status.as_u16() == 429 {
+            return Err(Error::rejected(
+                "GetOwnedGames 触发限流（HTTP 429），请稍后再同步库存",
+            ));
+        }
+        if !status.is_success() {
+            return Err(http_error_for("GetOwnedGames", status));
+        }
+
+        let payload: OwnedGamesPayload = response.json().await.net()?;
+        if payload.privacy_blocked() {
+            return Err(Error::rejected(
+                "Steam 未返回库存：请确认 SteamID 正确，并把「游戏详情」隐私设置为公开",
+            ));
+        }
+
+        let games = payload.into_games();
+        if games.is_empty() {
+            warnings.push(
+                "GetOwnedGames 返回 0 条：确认「游戏详情」为公开，或该账号确实没有游戏".to_string(),
+            );
+        }
+        let items: Vec<SourceItem> = games.iter().map(owned_game_to_source_item).collect();
+        Ok(ImportFetch {
+            steam_id,
+            items,
+            warnings,
+            source_mode: "official_api",
+            resolved_via,
+        })
+    }
+
+    /// 抓单个游戏的成就进度（`ISteamUserStats/GetPlayerAchievements`）。
+    ///
+    /// 返回三态：
+    /// * `Ok(Some(progress))`：接口明确回答（`total = 0` = 该游戏没有成就集）；
+    /// * `Ok(None)`：取不到（未拥有 / 隐私），调用方只刷新检查时间；
+    /// * `Err(SourceRejected)`：限流或 Key 失效（422），调用方应停止本轮；
+    ///   `Err` 的其它形态（未知载荷等）由连续失败熔断兜底。
+    pub async fn fetch_player_achievements(
+        &self,
+        steam_id: &str,
+        appid: &str,
+    ) -> Result<Option<AchievementProgress>> {
+        if let Some(fixture) = &self.fixture {
+            if fixture
+                .achievements_path
+                .as_ref()
+                .is_some_and(|path| path.exists())
+            {
+                return Ok(fixture.achievement(appid));
+            }
+            return Err(Error::rejected(
+                "离线 fixture 未提供 achievements.json：无法演示成就同步（重新生成 fixture 或改用真实网络）",
+            ));
+        }
+
+        let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) else {
+            return Err(Error::invalid(
+                "同步成就需要 API Key（官方 GetPlayerAchievements 接口不接受匿名调用）：\
+                 请设置 STEAM_API_KEY 后重启服务",
+            ));
+        };
+
+        let url = player_achievements_url(api_key, steam_id, appid, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if status.as_u16() == 429 {
+            return Err(Error::rejected(
+                "GetPlayerAchievements 触发限流（HTTP 429），请稍后再试",
+            ));
+        }
+
+        // 400（该游戏没有统计）/ 403（未拥有、隐私）都会带可解析的 JSON 答案，
+        // 所以先把 body 当载荷解析；只有「不是 JSON」时才按状态码报错。
+        let body = response.text().await.net()?;
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+            return parse_player_achievements(&value);
+        }
+
+        if matches!(status.as_u16(), 401 | 403) {
+            return Err(Error::rejected(
+                "Steam 拒绝了成就请求：API Key 无效或已过期（到 https://steamcommunity.com/dev/apikey 重新申请）",
+            ));
+        }
+        if !status.is_success() {
+            return Err(http_error_for(
+                "GetPlayerAchievements（响应不是 JSON）",
+                status,
+            ));
+        }
+        Err(Error::upstream(format!(
+            "成就响应解析失败（前 80 字符: {}）",
+            body.chars().take(80).collect::<String>()
+        )))
     }
 
     /// 公开接口：分页拉取 `wishlistdata`，按 appid 去重。
@@ -335,7 +506,7 @@ impl SteamClient {
                 ));
             }
             if !status.is_success() {
-                return Err(Error::rejected(format!("愿望单接口返回 HTTP {status}")));
+                return Err(http_error_for("愿望单接口", status));
             }
 
             let body = response.text().await.net()?;
@@ -515,7 +686,7 @@ impl SteamClient {
             ));
         }
         if !status.is_success() {
-            return Err(Error::rejected(format!("appdetails 返回 HTTP {status}")));
+            return Err(http_error_for("appdetails", status));
         }
 
         let value: serde_json::Value = response.json().await.net()?;
@@ -793,5 +964,56 @@ mod tests {
 
         assert!(fallback_candidates(&chunk, &all, "cn").is_empty());
         assert_eq!(fallback_candidates(&chunk, &HashMap::new(), "cn"), chunk);
+    }
+
+    /// fixture 缺 `library.json` / `achievements.json` 时必须明确报错，
+    /// 不能静默当成「0 条库存」/「所有游戏都没有成就」（P2 回归）。
+    #[tokio::test]
+    async fn fixture_missing_files_fail_loudly() {
+        let dir = std::env::temp_dir().join(format!("acgn-client-fixture-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        std::fs::write(
+            dir.join("wishlist.json"),
+            r#"{"steam_id":"76561198000000000","wishlist":{}}"#,
+        )
+        .expect("写 wishlist fixture");
+
+        let client = SteamClient::new(SteamConfig {
+            fixture: Some(dir.clone()),
+            ..Default::default()
+        })
+        .expect("客户端应能初始化");
+
+        let err = client
+            .fetch_library("76561198000000000")
+            .await
+            .expect_err("缺 library.json 必须报错");
+        assert!(err.to_string().contains("library.json"), "{err}");
+
+        let err = client
+            .fetch_player_achievements("76561198000000000", "1")
+            .await
+            .expect_err("缺 achievements.json 必须报错");
+        assert!(err.to_string().contains("achievements.json"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 5xx 是上游故障（502 upstream），4xx 才是来源拒绝（422）：
+    /// 别把 Steam 宕机提示成「可能是隐私设置问题」。
+    #[test]
+    fn server_errors_are_upstream_not_rejected() {
+        assert!(matches!(
+            http_error_for("X", reqwest::StatusCode::BAD_GATEWAY),
+            Error::Upstream(_)
+        ));
+        assert!(matches!(
+            http_error_for("X", reqwest::StatusCode::SERVICE_UNAVAILABLE),
+            Error::Upstream(_)
+        ));
+        assert!(matches!(
+            http_error_for("X", reqwest::StatusCode::FORBIDDEN),
+            Error::SourceRejected(_)
+        ));
     }
 }

@@ -38,6 +38,10 @@ stats:
 fixture:
     node scripts/gen-steam-fixture.mjs
 
+# 只用现有 wishlist.json 重新生成 library.json（不联网）
+fixture-library:
+    node scripts/gen-steam-fixture.mjs --library-only
+
 # 清空本地数据库（谨慎）
 reset:
     rm -f data/acgn.db data/acgn.db-shm data/acgn.db-wal

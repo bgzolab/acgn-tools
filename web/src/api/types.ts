@@ -88,6 +88,13 @@ export interface LibraryEntry {
   rating: number | null;
   progress_percent: number | null;
   playtime_minutes: number | null;
+  /** 最近一次来源导入报告的时长（Steam playtime_forever）；用于「手动优先」与展示 */
+  source_playtime_minutes: number | null;
+  /** 成就进度（achieved/total）；total = 0 表示该游戏没有成就集 */
+  achievements_achieved: number | null;
+  achievements_total: number | null;
+  /** 最近一次检查成就的时间（轮询：最久没查的优先） */
+  achievements_checked_at: string | null;
   note: string | null;
   source_added_at: string | null;
   started_at: string | null;
@@ -192,6 +199,27 @@ export interface EnrichSummary {
   warnings: string[];
   source_mode: string;
   duration_ms: number;
+}
+
+/** 成就同步（`POST /api/imports/steam/achievements`）的结果 */
+export interface AchievementSyncSummary {
+  /** 本次拿到成就数据的条目数（该账号确实拥有且有统计） */
+  checked: number;
+  /** 写库发生了变化的条目数（含 promoted） */
+  updated: number;
+  /** 其中：因「全成就」被标记为已通关的条数 */
+  promoted: number;
+  /** 拿到数据但没有任何变化 */
+  unchanged: number;
+  /** 该账号没有这个游戏（未拥有 / 隐私）：只刷新了检查时间 */
+  unavailable: number;
+  /** 请求失败（网络 / 接口异常），再点一次会重试 */
+  failed: number;
+  /** 仍未检查过的条目数（再点一次继续） */
+  pending: number;
+  source_mode: string;
+  duration_ms: number;
+  warnings: string[];
 }
 
 export interface PublicConfig {

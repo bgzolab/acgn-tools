@@ -2,18 +2,22 @@
 /**
  * 生成 Steam 离线 fixture（给开发 / 演示 / 回归测试用）。
  *
- * 数据全部来自公开接口，不需要 API Key：
+ * 数据来源（公开接口，不需要 API Key）：
  *   - appreviews  → 好评档位 / 好评数（真实）
  *   - appdetails  → 中英文名 / 价格 / 简介 / 发售日 / 平台（真实）
+ *   - library.json / achievements.json 的时长与成就是脚本**确定性生成**的演示数据
+ *     （GetOwnedGames / GetPlayerAchievements 需要 API Key 与真实账号，
+ *     仓库里不能放任何人的真实库存），名字来自 appdetails。
  *
  * 用法：
  *   node scripts/gen-steam-fixture.mjs                 # 生成到 fixtures/steam/
+ *   node scripts/gen-steam-fixture.mjs --library-only  # 只用现有 wishlist.json 生成 library/achievements（不联网）
  *   node scripts/gen-steam-fixture.mjs --out /tmp/steam
  *
- * 注意：脚本会真的访问 Steam，请确保网络通畅（国内需要走代理）。
+ * 注意：除 `--library-only` 外脚本会真的访问 Steam，请确保网络通畅（国内需要走代理）。
  */
 
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 const APPIDS = [
@@ -53,8 +57,89 @@ const OUT_DIR =
   outIndex >= 0 && args[outIndex + 1]
     ? path.resolve(args[outIndex + 1])
     : path.resolve(import.meta.dirname, "..", "fixtures", "steam");
+/** 只用现有 wishlist.json 生成 library.json：不联网，适合日常调整库演示数据 */
+const LIBRARY_ONLY = args.includes("--library-only");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 演示用累计时长（分钟）：确定性生成 —— 前几条像在玩，其余多为未玩。 */
+function demoPlaytime(index) {
+  return index % 5 === 0 ? 0 : (index * 173) % 6000;
+}
+
+/**
+ * 从 wishlist 生成 GetOwnedGames 形态的 library.json。
+ * 时长是演示数据；条目标记「已拥有」，导入后会按「有时长 = 在玩」处理。
+ */
+function buildLibraryFile(wishlist) {
+  const now = Math.floor(Date.now() / 1000);
+  const games = Object.entries(wishlist)
+    .filter(([, entry]) => entry?.name)
+    .map(([appid, entry], index) => {
+      const playtime = demoPlaytime(index);
+      return {
+        appid: Number(appid),
+        name: entry.name,
+        playtime_forever: playtime,
+        playtime_2weeks: 0,
+        ...(playtime > 0
+          ? { rtime_last_played: now - (index + 1) * 7 * 24 * 3600 }
+          : {}),
+      };
+    });
+
+  return {
+    steam_id: "76561198000000000",
+    fetched_at: new Date().toISOString(),
+    note: "样例数据：时长由 scripts/gen-steam-fixture.mjs 确定性生成（演示用，不是真实账号数据）",
+    response: { game_count: games.length, games },
+  };
+}
+
+/**
+ * 从 library 生成 achievements.json（GetPlayerAchievements 的汇总形态）。
+ * 覆盖**每一个**库存条目，与真实接口语义一致：
+ *   - 玩过的：每 3 个里 1 个全成就，其余部分进度；
+ *   - 没玩过的：0/0（真实接口回「没有统计」→ 0/0，而不是「取不到」）。
+ */
+function buildAchievementsFile(libraryFile) {
+  const achievements = {};
+  let played = 0;
+  for (const game of libraryFile.response.games) {
+    if (!game.playtime_forever) {
+      achievements[String(game.appid)] = { achieved: 0, total: 0 };
+      continue;
+    }
+    const total = 12 + ((played * 7) % 30);
+    const achieved =
+      played % 3 === 0 ? total : Math.floor((total * ((played % 5) + 1)) / 6);
+    achievements[String(game.appid)] = { achieved, total };
+    played += 1;
+  }
+  return {
+    note: "样例数据：成就进度由 scripts/gen-steam-fixture.mjs 确定性生成（演示用，不是真实账号数据）",
+    achievements,
+  };
+}
+
+async function writeLibraryFile(wishlist) {
+  const libraryFile = buildLibraryFile(wishlist);
+  await writeFile(
+    path.join(OUT_DIR, "library.json"),
+    `${JSON.stringify(libraryFile, null, 2)}\n`,
+    "utf8",
+  );
+  const achievementsFile = buildAchievementsFile(libraryFile);
+  await writeFile(
+    path.join(OUT_DIR, "achievements.json"),
+    `${JSON.stringify(achievementsFile, null, 2)}\n`,
+    "utf8",
+  );
+  console.log(
+    `✔ library.json：${libraryFile.response.game_count} 条（演示时长）；` +
+      `achievements.json：${Object.keys(achievementsFile.achievements).length} 条（演示成就）`,
+  );
+}
 
 async function getJson(url, attempt = 1) {
   try {
@@ -102,6 +187,14 @@ async function appDetails(appid, language) {
 async function main() {
   console.log(`→ 目标目录 ${OUT_DIR}`);
   await mkdir(OUT_DIR, { recursive: true });
+
+  // 不联网：只用现有 wishlist.json 重新生成 library.json
+  if (LIBRARY_ONLY) {
+    const raw = await readFile(path.join(OUT_DIR, "wishlist.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    await writeLibraryFile(parsed.wishlist ?? parsed);
+    return;
+  }
 
   const wishlist = {};
   const appdetails = {};
@@ -175,6 +268,7 @@ async function main() {
     `${JSON.stringify(appdetails, null, 2)}\n`,
     "utf8",
   );
+  await writeLibraryFile(wishlist);
 
   console.log(`✔ 完成：${index} 条愿望单 / ${Object.keys(appdetails).length} 条详情，失败 ${failures}`);
 }

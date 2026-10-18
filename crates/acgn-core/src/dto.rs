@@ -53,6 +53,12 @@ pub struct SourceItem {
     pub priority: Option<i64>,
     /// 来源侧「加入时间」
     pub source_added_at: Option<DateTime<Utc>>,
+    /// 来源侧记录的累计游玩时长（分钟，Steam 的 `playtime_forever`）。
+    ///
+    /// 这是「来源测量值」而不是个人状态：存储层把它记进
+    /// `library_entries.source_playtime_minutes`；是否采纳为展示值由合并规则决定
+    /// （用户手填过的时长优先，见 `docs/design.md` §4.5）。
+    pub playtime_minutes: Option<i64>,
     /// 来源侧原始载荷，落库到 `games.metadata_json`，方便以后补字段
     pub metadata: Option<serde_json::Value>,
     /// 这一份数据的详细程度（决定能否覆盖已有的封面等字段）
@@ -287,6 +293,44 @@ pub struct MoneyBucket {
     pub list_price_cents: i64,
     pub current_price_cents: i64,
     pub item_count: i64,
+}
+
+/// 单个游戏的成就进度（Steam `GetPlayerAchievements` 的汇总）。
+///
+/// `total = 0` 表示这个游戏没有成就集（不是「取不到」——取不到用 `None` 表达）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AchievementProgress {
+    pub achieved: i64,
+    pub total: i64,
+}
+
+impl AchievementProgress {
+    /// 是否全成就（`total > 0` 且全部达成）。
+    pub fn is_complete(&self) -> bool {
+        self.total > 0 && self.achieved >= self.total
+    }
+}
+
+/// 一次成就同步的结果汇总。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AchievementSyncSummary {
+    /// 本次拿到成就数据的条目数（该账号确实拥有且有统计）
+    pub checked: i64,
+    /// 写库发生了变化的条目数（含 `promoted`）
+    pub updated: i64,
+    /// 其中：因「全成就」被标记为已通关的条数
+    pub promoted: i64,
+    /// 拿到数据但没有任何变化（例如进度与上次相同）
+    pub unchanged: i64,
+    /// 该账号没有这个游戏（未拥有 / 隐私）：取不到进度，只刷新了检查时间
+    pub unavailable: i64,
+    /// 请求失败（网络 / 接口异常），下次会重试
+    pub failed: i64,
+    /// 本轮结束后仍未检查过的条目数（再点一次继续）
+    pub pending: i64,
+    pub source_mode: String,
+    pub duration_ms: i64,
+    pub warnings: Vec<String>,
 }
 
 /// 元数据补全的结果。

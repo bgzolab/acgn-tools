@@ -28,7 +28,9 @@ Runnable samples for every endpoint live in [`api.http`](api.http) (VS Code REST
 **PATCH semantics** (used by the game endpoints): a missing field means "leave unchanged";
 a negative number clears a numeric field; an empty `note` clears it. Moving the status to
 `playing` / `completed` fills `started_at` / `finished_at` (and sets progress to 100 for
-`completed`) when those are still empty.
+`completed`) when those are still empty. Clearing `playtime_minutes` (negative) drops the local
+manual value: when a tracked Steam playtime exists the effective value reverts to it (see the
+library import section).
 
 **Imports are idempotent.** Re-running the same import reports `unchanged` and writes nothing.
 Metadata follows the source; personal state follows the local database — see
@@ -49,6 +51,8 @@ Metadata follows the source; personal state follows the local database — see
 | POST | `/api/games/delete` | Batch delete `{"ids": […]}` → `{"deleted": n}` (multi-select cleanup) |
 | POST | `/api/games/{id}/refresh-metadata` | Re-fetch store details for a single entry |
 | POST | `/api/imports/steam/wishlist` | Import a Steam wishlist |
+| POST | `/api/imports/steam/library` | Import the Steam library (owned games + playtime; requires `STEAM_API_KEY`) |
+| POST | `/api/imports/steam/achievements` | Check achievement progress (all achievements → completed; per-game lookups) |
 | POST | `/api/imports` | Generic JSON import (flat `SourceItem`s, merge semantics) |
 | POST | `/api/imports/restore` | Restore a backup (the export document verbatim, file wins) |
 | GET | `/api/imports` | Run history (`?limit=`) |
@@ -109,6 +113,75 @@ actually happened — `{ "deleted": 2 }`. Empty `ids` or more than 1000 ids → 
 - Response: `{ "summary": …, "run": …, "preview": [...] }`. `summary.warnings` explains
   fallbacks (for example "fell back to the official API") and `summary.missing` counts entries
   that are no longer in the wishlist — they are never deleted locally.
+
+### POST /api/imports/steam/library
+
+Imports the owned-games library, including cumulative playtime. Same request/response shape as
+the wishlist import:
+
+```json
+{ "steam_id": "76561197960287930", "preview": true, "options": { "dry_run": false } }
+```
+
+- **A Steam Web API key is required** (`STEAM_API_KEY`): the official `GetOwnedGames` endpoint
+  refuses anonymous calls (HTTP 401). The community XML game list also redirects anonymous
+  visitors to the login page, so there is no keyless fallback. Without a key the request fails
+  fast with `400 invalid` and a hint; the web UI disables the library buttons when
+  `GET /api/config` reports `steam.has_api_key: false` (fixture mode excepted).
+- The profile's **"Game details" privacy setting must be public**, otherwise Steam answers
+  `{"response": {}}`. That is reported as `422 source_rejected` with a privacy hint — it is not
+  confused with an empty library (which reports 0 items with a warning).
+- Owned games with playtime are imported as `playing`, never-played ones as `backlog`. A
+  `wishlist` / `backlog` entry is upgraded through the normal status-adoption rule; a status
+  the user set (`playing` / `completed` / …) is never reverted. `summary.missing` counts items
+  that were seen in an earlier library sync but are gone now (refund / removed / lost family
+  sharing) — with the library wording, not the wishlist one.
+- **Playtime.** `SourceItem.playtime_minutes` is recorded in
+  `entry.source_playtime_minutes`, and `entry.playtime_minutes` follows it while the user has
+  not edited it by hand. A manual value wins on every later sync; `PATCH playtime_minutes: -1`
+  (or the "adopt Steam playtime" button) restores following.
+- If every imported game shows playtime `0`, the account has *"Always keep my total playtime
+  private"* enabled (a checkbox under the Game-details privacy setting) — ownership is still
+  imported. `playtime_2weeks` / `rtime_last_played` may also be absent unless the profile is
+  the API key's owner; they are optional fields.
+
+### POST /api/imports/steam/achievements
+
+Checks achievement progress, one game per request, and marks games with **all achievements**
+as `completed`:
+
+```json
+{ "steam_id": "bgzocn", "limit": 200 }
+```
+
+- Requires `STEAM_API_KEY` and a public "Game details" setting (same as the library import).
+  `limit` defaults to 200 (max 500) — the response's `pending` tells you how many entries were
+  never checked; call again to continue.
+- Only owned entries (`source_playtime_minutes` non-null) are checked. Poll order is
+  never-checked first, then the least-recently checked, so refreshes rotate.
+- Status rules: `wishlist` / `backlog` / `playing` are promoted to `completed` (filling
+  `finished_at` and 100% progress when empty); a user-set `completed` / `on_hold` / `dropped` /
+  `ignored` is never reverted. Games without an achievement set stay untouched.
+- Per-entry progress is stored in `entry.achievements_achieved` / `achievements_total` and
+  `achievements_checked_at`; entries whose achievements cannot be read (not owned / private)
+  keep their previous values and still advance the polling clock.
+- Response:
+
+```json
+{ "checked": 24, "updated": 18, "promoted": 6, "unchanged": 6, "unavailable": 80, "failed": 0,
+  "pending": 21, "source_mode": "live_with_key", "duration_ms": 9123,
+  "warnings": ["6 个游戏全成就，已标记为「已通关」"] }
+```
+
+`checked` counts entries with real achievement data (this account owns them); `updated` counts
+entries whose stored values actually changed (promotions are a subset); `unavailable` means the
+account does not own that game (still checked, progress kept); `failed` is a real request error
+and is retried on the next click. Five consecutive failures stop the run (systemic failure
+protection) and are reported in `warnings`.
+
+- Recorded in the run history as `steam_achievements` (also when the run stops early / fails).
+  In this mode `skipped` counts request failures only — entries the account does not own are
+  normal answers and appear in the warnings, not in `skipped`.
 
 ### POST /api/imports
 
@@ -175,7 +248,7 @@ page as 502.
 ### GET /api/export/json
 
 ```json
-{ "exported_at": "…", "app": "acgn-tools", "schema_revision": 1, "count": 27, "items": [ … ] }
+{ "exported_at": "…", "app": "acgn-tools", "schema_revision": 3, "count": 27, "items": [ … ] }
 ```
 
 Each element is `{ "game": …, "entry": … }`: full metadata plus personal state. The document is

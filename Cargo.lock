@@ -24,6 +24,8 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "dotenvy",
+ "futures",
  "serde",
  "serde_json",
  "tokio",

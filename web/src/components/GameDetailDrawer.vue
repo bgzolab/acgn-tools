@@ -43,10 +43,55 @@ const entry = computed(() => item.value?.entry ?? null);
 const title = computed(() => (game.value ? displayTitle(game.value) : ""));
 const subtitle = computed(() => (game.value ? secondaryTitle(game.value) : ""));
 
+/** Steam 记录的时长（来源跟踪值） */
+const sourcePlaytime = computed(() => entry.value?.source_playtime_minutes ?? null);
+/** 当前有效时长是否仍在跟随来源（未被本地手填过） */
+const followsSource = computed(() => {
+  const current = entry.value;
+  if (!current || current.source_playtime_minutes === null) return false;
+  return (
+    current.playtime_minutes === null ||
+    current.playtime_minutes === current.source_playtime_minutes
+  );
+});
+
+/** Steam 记录的可读文案（0 = 尚未游玩） */
+const sourcePlaytimeLabel = computed(() =>
+  sourcePlaytime.value !== null && sourcePlaytime.value > 0
+    ? formatMinutes(sourcePlaytime.value)
+    : "尚未游玩",
+);
+
+/** 有效时长上限：100 年（分钟）。超过它不是手滑就是数据错误，也避免超出 i64 触发英文 serde 400 */
+const MAX_PLAYTIME_MINUTES = 100 * 365 * 24 * 60;
+
 const playtimeHint = computed(() => {
-  const minutes = Number.parseInt(playtimeMinutes.value, 10);
-  if (!Number.isFinite(minutes) || minutes <= 0) return "留空并保存可清空时长";
-  return `≈ ${(minutes / 60).toFixed(1)} 小时`;
+  const raw = playtimeMinutes.value.trim();
+  const source = sourcePlaytime.value;
+  if (raw === "") {
+    if (source !== null) {
+      return `留空并保存 = 恢复跟随 Steam 时长（${sourcePlaytimeLabel.value}）`;
+    }
+    return "留空并保存可清空时长";
+  }
+  if (!/^\d+$/.test(raw)) {
+    return "请填写非负整数（分钟），或留空以清空";
+  }
+  const minutes = Number.parseInt(raw, 10);
+  if (minutes > MAX_PLAYTIME_MINUTES) {
+    return "时长超出合理范围（上限 100 年）";
+  }
+  if (minutes === 0) {
+    // 0 是「手动记 0 分钟」，不是「恢复跟随」：两条路的语义不同，提示要写清楚
+    return source !== null
+      ? "保存 0 = 手动记为 0 分钟（不再跟随 Steam）"
+      : "保存 0 = 手动记为 0 分钟";
+  }
+  const base = `≈ ${(minutes / 60).toFixed(1)} 小时`;
+  if (source !== null && minutes !== source) {
+    return `${base} · Steam 记录 ${sourcePlaytimeLabel.value}，保存后以本地为准`;
+  }
+  return base;
 });
 
 async function load(id: number) {
@@ -59,10 +104,14 @@ async function load(id: number) {
     if (props.gameId !== id) return;
     item.value = loaded;
     noteDraft.value = loaded.entry.note ?? "";
+    // 时长的回显要区分「手填的 0」与「跟随来源的 0」：
+    // 手填 0 必须回显为 "0"（否则保存备注会被当成留空、静默改回跟随来源）；
+    // 跟随中的 0 留空（等价于「没记录」）。
+    const playtime = loaded.entry.playtime_minutes;
+    const source = loaded.entry.source_playtime_minutes;
+    const follows = source !== null && (playtime === null || playtime === source);
     playtimeMinutes.value =
-      loaded.entry.playtime_minutes && loaded.entry.playtime_minutes > 0
-        ? String(loaded.entry.playtime_minutes)
-        : "";
+      playtime !== null && !(playtime === 0 && follows) ? String(playtime) : "";
   } catch (error) {
     if (props.gameId !== id) return;
     const { title: toastTitle, message } = errorText(error);
@@ -125,12 +174,17 @@ async function saveNoteAndPlaytime() {
   const raw = playtimeMinutes.value.trim();
 
   if (raw === "") {
-    // 留空 = 清空时长
+    // 留空 = 清空本地手填值；有 Steam 记录时后端会恢复为来源值
     if (item.value.entry.playtime_minutes !== null) patchBody.playtime_minutes = -1;
   } else {
-    const minutes = Number.parseInt(raw, 10);
-    if (!Number.isFinite(minutes) || minutes < 0) {
+    // 必须是纯数字：parseInt("750abc") 会静默截断成 750，与用户输入不符
+    if (!/^\d+$/.test(raw)) {
       pushToast("warn", "时长不合法", "请填写非负整数（分钟），或留空以清空");
+      return;
+    }
+    const minutes = Number.parseInt(raw, 10);
+    if (minutes > MAX_PLAYTIME_MINUTES) {
+      pushToast("warn", "时长不合法", "时长超出合理范围（上限 100 年）");
       return;
     }
     // 只在真的变化时才提交，避免无谓写入
@@ -142,6 +196,17 @@ async function saveNoteAndPlaytime() {
   const saved = await patch(patchBody);
   // 只有真的保存成功才提示「已保存」：失败时 patch() 已经弹过错误 toast
   if (saved) pushToast("ok", "已保存", "备注与时长已更新");
+}
+
+/** 一键采用 Steam 时长：等于来源值后恢复「自动跟随」 */
+async function adoptSourcePlaytime() {
+  const source = entry.value?.source_playtime_minutes;
+  if (source === null || source === undefined) return;
+  const saved = await patch({ playtime_minutes: source });
+  if (saved) {
+    playtimeMinutes.value = source > 0 ? String(source) : "";
+    pushToast("ok", "已采用 Steam 时长", "之后库存同步会自动跟随");
+  }
 }
 
 async function doRefresh() {
@@ -281,6 +346,38 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
             placeholder="例如 750"
           />
           <div class="hint" style="margin-top: 4px">{{ playtimeHint }}</div>
+          <div
+            v-if="sourcePlaytime !== null && !followsSource"
+            class="row tight"
+            style="margin-top: 6px"
+          >
+            <span class="hint">Steam 记录：{{ sourcePlaytimeLabel }}</span>
+            <button class="btn sm ghost" :disabled="saving" @click="adoptSourcePlaytime">
+              采用 Steam 时长
+            </button>
+          </div>
+          <div v-else-if="sourcePlaytime !== null" class="hint" style="margin-top: 4px">
+            当前跟随 Steam 时长（{{ sourcePlaytimeLabel }}）
+          </div>
+        </div>
+
+        <div v-if="entry.achievements_total !== null" class="field">
+          <span class="label">成就</span>
+          <div class="hint">
+            <template v-if="entry.achievements_total === 0">该游戏没有成就</template>
+            <template v-else>
+              {{ entry.achievements_achieved ?? 0 }} / {{ entry.achievements_total }}
+              <span
+                v-if="(entry.achievements_achieved ?? 0) >= entry.achievements_total"
+                class="badge ok"
+                style="margin-left: 4px"
+                >全成就</span
+              >
+            </template>
+            <span class="hint" style="margin-left: 6px">
+              （检查于 {{ relativeTime(entry.achievements_checked_at) }}）
+            </span>
+          </div>
         </div>
 
         <div class="field">
@@ -357,7 +454,18 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           <dd>{{ formatDateTime(entry.last_synced_at) }}</dd>
 
           <dt v-if="entry.playtime_minutes">时长</dt>
-          <dd v-if="entry.playtime_minutes">{{ formatMinutes(entry.playtime_minutes) }}</dd>
+          <dd v-if="entry.playtime_minutes">
+            {{ formatMinutes(entry.playtime_minutes) }}
+            <span
+              v-if="
+                entry.source_playtime_minutes !== null &&
+                entry.playtime_minutes !== entry.source_playtime_minutes
+              "
+              class="hint"
+            >
+              （本地手填；Steam 记录 {{ formatMinutes(entry.source_playtime_minutes) }}）
+            </span>
+          </dd>
 
           <dt>来源 ID</dt>
           <dd>{{ game.source }} / {{ game.external_id }}</dd>
