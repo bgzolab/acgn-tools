@@ -685,7 +685,7 @@ impl SteamClient {
             ));
         }
         if !status.is_success() {
-            return Err(Error::rejected(format!("appdetails 返回 HTTP {status}")));
+            return Err(http_error_for("appdetails", status));
         }
 
         let value: serde_json::Value = response.json().await.net()?;

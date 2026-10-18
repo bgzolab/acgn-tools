@@ -1,6 +1,10 @@
 {
   "note": "样例数据：成就进度由 scripts/gen-steam-fixture.mjs 确定性生成（演示用，不是真实账号数据）",
   "achievements": {
+    "105600": {
+      "achieved": 0,
+      "total": 0
+    },
     "294100": {
       "achieved": 12,
       "total": 12
@@ -16,6 +20,10 @@
     "427520": {
       "achieved": 33,
       "total": 33
+    },
+    "526870": {
+      "achieved": 0,
+      "total": 0
     },
     "548430": {
       "achieved": 33,
@@ -33,6 +41,10 @@
       "achieved": 15,
       "total": 31
     },
+    "949230": {
+      "achieved": 0,
+      "total": 0
+    },
     "975370": {
       "achieved": 25,
       "total": 38
@@ -48,6 +60,10 @@
     "1091500": {
       "achieved": 9,
       "total": 29
+    },
+    "1145360": {
+      "achieved": 0,
+      "total": 0
     },
     "1245620": {
       "achieved": 36,
@@ -65,6 +81,10 @@
       "achieved": 27,
       "total": 27
     },
+    "1817230": {
+      "achieved": 0,
+      "total": 0
+    },
     "1888160": {
       "achieved": 11,
       "total": 34
@@ -80,6 +100,10 @@
     "2358720": {
       "achieved": 20,
       "total": 25
+    },
+    "2379780": {
+      "achieved": 0,
+      "total": 0
     },
     "2679460": {
       "achieved": 5,

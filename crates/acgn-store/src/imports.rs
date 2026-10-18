@@ -901,6 +901,8 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
         && entry.status != status
     {
         entry.status = status;
+        // 与手动 PATCH 对齐：切到在玩/已通关时补时间戳（否则「在玩」没有开始时间）
+        apply_status_side_effects(&mut entry, now);
         entry_changed = true;
     }
 
@@ -936,6 +938,26 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
         metadata_json_changed,
         entry_changed,
     })
+}
+
+/// 状态切换的附带写入（与手动 PATCH 同一套语义）：
+/// 在玩 → 补开始时间、清完成时间；已通关 → 补开始/完成时间与 100% 进度。
+/// 导入收养（[`plan_merge`]）与 `Db::update_entry` 共用，避免两条路语义漂移。
+pub(crate) fn apply_status_side_effects(entry: &mut LibraryEntry, now: DateTime<Utc>) {
+    match entry.status {
+        Status::Playing => {
+            entry.started_at.get_or_insert(now);
+            entry.finished_at = None;
+        }
+        Status::Completed => {
+            entry.started_at.get_or_insert(now);
+            entry.finished_at = Some(now);
+            if entry.progress_percent.is_none() {
+                entry.progress_percent = Some(100);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `metadata_json` 的比较。

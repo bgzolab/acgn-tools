@@ -98,13 +98,18 @@ function buildLibraryFile(wishlist) {
 
 /**
  * 从 library 生成 achievements.json（GetPlayerAchievements 的汇总形态）。
- * 只给「玩过」的游戏生成：每 3 个玩过的游戏里 1 个全成就，其余部分进度。
+ * 覆盖**每一个**库存条目，与真实接口语义一致：
+ *   - 玩过的：每 3 个里 1 个全成就，其余部分进度；
+ *   - 没玩过的：0/0（真实接口回「没有统计」→ 0/0，而不是「取不到」）。
  */
 function buildAchievementsFile(libraryFile) {
   const achievements = {};
   let played = 0;
   for (const game of libraryFile.response.games) {
-    if (!game.playtime_forever) continue;
+    if (!game.playtime_forever) {
+      achievements[String(game.appid)] = { achieved: 0, total: 0 };
+      continue;
+    }
     const total = 12 + ((played * 7) % 30);
     const achieved =
       played % 3 === 0 ? total : Math.floor((total * ((played % 5) + 1)) / 6);

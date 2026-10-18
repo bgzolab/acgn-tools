@@ -18,6 +18,19 @@ const includeNonGames = ref(false);
 const running = ref<{ kind: "wishlist" | "library"; dry: boolean } | null>(null);
 const result = ref<ImportResponse | null>(null);
 
+/** 结果来自哪种导入：徽章按 mode 映射（JSON 导入 / 备份还原不能标成「愿望单」） */
+const IMPORT_MODE_LABELS: Record<string, string> = {
+  steam_wishlist: "愿望单",
+  steam_library: "库存",
+  json: "JSON 导入",
+  restore: "备份还原",
+  manual: "手动",
+};
+
+const resultModeLabel = computed(
+  () => IMPORT_MODE_LABELS[result.value?.summary.mode ?? ""] ?? result.value?.summary.mode ?? "—",
+);
+
 /** 结果是不是库存导入：missing 文案不同（愿望单 vs 库存） */
 const resultIsLibrary = computed(() => result.value?.summary.mode === "steam_library");
 
@@ -390,7 +403,7 @@ onMounted(() => {
       <div class="row" style="margin-bottom: 10px">
         <strong v-if="result.run">运行 #{{ result.run.id }}</strong>
         <strong v-else>预览结果（未写入）</strong>
-        <span class="badge">{{ resultIsLibrary ? "库存" : "愿望单" }}</span>
+        <span class="badge">{{ resultModeLabel }}</span>
         <span class="badge ok">新增 {{ result.summary.added }}</span>
         <span class="badge">更新 {{ result.summary.updated }}</span>
         <span class="badge">未变 {{ result.summary.unchanged }}</span>

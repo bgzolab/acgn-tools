@@ -233,20 +233,8 @@ impl Db {
         }
 
         if entry.status != previous_status {
-            match entry.status {
-                Status::Playing => {
-                    entry.started_at.get_or_insert(now);
-                    entry.finished_at = None;
-                }
-                Status::Completed => {
-                    entry.started_at.get_or_insert(now);
-                    entry.finished_at = Some(now);
-                    if entry.progress_percent.is_none() {
-                        entry.progress_percent = Some(100);
-                    }
-                }
-                _ => {}
-            }
+            // 与导入收养共用同一套附带写入（补 started_at / finished_at / 进度）
+            crate::imports::apply_status_side_effects(&mut entry, now);
         }
 
         entry.updated_at = now;

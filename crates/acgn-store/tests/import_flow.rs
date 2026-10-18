@@ -804,7 +804,12 @@ async fn source_playing_promotes_unconfirmed_states_only() {
     import(&db, &[item("2001", "Played Later")]).await;
     let summary = import_library(&db, &[library_item("2001", "Played Later", 120)]).await;
     assert_eq!(summary.updated, 1);
-    assert_eq!(get(&db, "2001").await.entry.status, Status::Playing);
+    let entry = get(&db, "2001").await.entry;
+    assert_eq!(entry.status, Status::Playing);
+    assert!(
+        entry.started_at.is_some(),
+        "收养为在玩时补开始时间（与手动 PATCH 一致）"
+    );
 
     // 待玩（0 时长）→ 在玩（第二次同步有时长了）
     import_library(&db, &[library_item("2002", "Owned Not Played", 0)]).await;

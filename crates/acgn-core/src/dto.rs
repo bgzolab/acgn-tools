@@ -320,7 +320,7 @@ pub struct AchievementSyncSummary {
     pub updated: i64,
     /// 其中：因「全成就」被标记为已通关的条数
     pub promoted: i64,
-    /// 拿到数据但没有任何变化（进度没动 / 没有成就集）
+    /// 拿到数据但没有任何变化（例如进度与上次相同）
     pub unchanged: i64,
     /// 该账号没有这个游戏（未拥有 / 隐私）：取不到进度，只刷新了检查时间
     pub unavailable: i64,
