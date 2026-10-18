@@ -6,7 +6,7 @@
 //! 2. 公开愿望单接口（无需 Key，信息最全）；
 //! 3. 公开接口被拒且配置了 `STEAM_API_KEY` → 官方接口（只有 appid，名称等需再补全）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use acgn_core::{Error, Result, SourceItem};
@@ -15,6 +15,7 @@ use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use tracing::{debug, warn};
 
 use crate::appdetails::parse_app_details;
+use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
 use crate::util::extract_xml_tag;
@@ -53,6 +54,23 @@ impl<T> ReqwestExt<T> for std::result::Result<T, reqwest::Error> {
             }
         })
     }
+}
+
+/// 计算需要换 `us` 重试的 appid：本块在配置国家下没拿到 capsule 的子集。
+/// 配置国家已经是 `us` 时返回空（不再重试）。
+fn fallback_candidates(
+    chunk: &[String],
+    primary: &HashMap<String, String>,
+    country: &str,
+) -> Vec<String> {
+    if country == FALLBACK_COUNTRY {
+        return Vec::new();
+    }
+    chunk
+        .iter()
+        .filter(|appid| !primary.contains_key(*appid))
+        .cloned()
+        .collect()
 }
 
 /// 用户输入的 Steam ID 形态。
@@ -505,6 +523,92 @@ impl SteamClient {
         Ok(parse_app_details(&entry).map(|data| data.to_source_item(appid)))
     }
 
+    /// 用新资产接口补竖版海报：`library_capsule`（600x900）覆盖 `poster_url`。
+    ///
+    /// 旧式 `.../library_600x900.jpg` 对成人 / 区域受限内容已经 404，而 `appdetails`
+    /// 只有横版 header。海报属于锦上添花：失败只记日志，不影响元数据主流程。
+    ///
+    /// 拿不到新地址时把 `poster_url` 置 `None`，而不是留着旧式模板：合并对 `None`
+    /// 保留本地值（`take_authoritative`），已存过的好海报不会被一次接口故障覆盖；
+    /// 首次补全的条目该次没有海报，交给前端封面兜底。
+    async fn fill_poster_assets(&self, items: &mut [SourceItem]) {
+        if items.is_empty() {
+            return;
+        }
+        let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
+        let capsules = self.store_library_capsules(&appids).await;
+        for item in items.iter_mut() {
+            item.poster_url = capsules.get(&item.external_id).cloned();
+        }
+    }
+
+    /// 取一批 appid 的竖版海报 URL（尽力而为：单个分块失败只记日志，返回已取到的部分）。
+    ///
+    /// 先配置国家；整块拿不到的再切 `us` 重试——国区上下文会把成人内容的 assets
+    /// 整个隐藏，而不是逐条报错。任意一次请求失败都不能作废已取到的结果。
+    async fn store_library_capsules(&self, appids: &[String]) -> HashMap<String, String> {
+        let mut capsules = HashMap::new();
+        let chunk_count = appids.len().div_ceil(STORE_ITEMS_CHUNK);
+        for (index, chunk) in appids.chunks(STORE_ITEMS_CHUNK).enumerate() {
+            match self
+                .store_items_for_country(chunk, &self.config.country)
+                .await
+            {
+                Ok(primary) => {
+                    let missing = fallback_candidates(chunk, &primary, &self.config.country);
+                    capsules.extend(primary);
+
+                    if !missing.is_empty() {
+                        // 回退失败只损失缺的这几条：主国家结果照常保留
+                        match self
+                            .store_items_for_country(&missing, FALLBACK_COUNTRY)
+                            .await
+                        {
+                            Ok(fallback) => capsules.extend(fallback),
+                            Err(err) => {
+                                warn!(error = %err, "竖版海报换区重试失败（保留主国家结果）")
+                            }
+                        }
+                    }
+                }
+                Err(err) => warn!(error = %err, "竖版海报请求失败（跳过该批）"),
+            }
+
+            // 与 appdetails 一样按节流间隔排队（只在还有下一块时等待），
+            // 避免批量补全时连续打请求触发限流
+            if index + 1 < chunk_count && self.config.enrich_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
+            }
+        }
+        capsules
+    }
+
+    async fn store_items_for_country(
+        &self,
+        appids: &[String],
+        country: &str,
+    ) -> Result<HashMap<String, String>> {
+        let url = store_items_url(appids, country, &self.config.language);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
+            .send()
+            .await
+            .net()?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(Error::upstream(format!(
+                "IStoreBrowseService 返回 HTTP {status}"
+            )));
+        }
+
+        let value: serde_json::Value = response.json().await.net()?;
+        Ok(parse_library_capsules(&value))
+    }
+
     /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
     pub async fn app_details_batch(&self, appids: &[String]) -> Result<AppDetailsBatch> {
         if let Some(fixture) = &self.fixture {
@@ -574,6 +678,10 @@ impl SteamClient {
                 tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
             }
         }
+
+        // 竖版海报在新资产接口里（appdetails 只有横版 header）；
+        // 旧式 library_600x900 路径对成人 / 区域受限内容已经 404
+        self.fill_poster_assets(&mut items).await;
 
         Ok(AppDetailsBatch {
             items,
@@ -650,5 +758,40 @@ mod tests {
         );
         assert!(parse_id_input("").is_err());
         assert!(parse_id_input("这是一个非法输入 with spaces").is_err());
+    }
+
+    fn appid_list(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    /// 只有「本块没拿到」的 appid 才进入 `us` 重试；已是 us 时不重试。
+    #[test]
+    fn fallback_candidates_only_returns_missing_appids() {
+        let chunk = appid_list(&["1", "2", "3"]);
+        let mut primary = HashMap::new();
+        primary.insert("1".to_string(), "capsule-1".to_string());
+        primary.insert("3".to_string(), "capsule-3".to_string());
+
+        assert_eq!(
+            fallback_candidates(&chunk, &primary, "cn"),
+            vec!["2".to_string()],
+            "命中过的 appid 不应再发起 us 重试"
+        );
+        assert!(
+            fallback_candidates(&chunk, &primary, FALLBACK_COUNTRY).is_empty(),
+            "配置国家已是 us 时不再重试"
+        );
+    }
+
+    /// 全命中无需换区；整块缺失则整块回退。
+    #[test]
+    fn fallback_candidates_handles_full_hits_and_total_misses() {
+        let chunk = appid_list(&["1", "2"]);
+        let mut all = HashMap::new();
+        all.insert("1".to_string(), "x".to_string());
+        all.insert("2".to_string(), "y".to_string());
+
+        assert!(fallback_candidates(&chunk, &all, "cn").is_empty());
+        assert_eq!(fallback_candidates(&chunk, &HashMap::new(), "cn"), chunk);
     }
 }

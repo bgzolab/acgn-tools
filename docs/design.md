@@ -162,6 +162,14 @@ Three paths, chosen automatically:
 - Store details are region-sensitive: titles that are not sold in the configured country return
   `success:false` for `cc=cn`, so the client retries once with `cc=us`. Those entries then carry
   USD prices, which is the honest answer ("not sold in your region").
+- Vertical posters (`library_capsule`, 600x900) come from `IStoreBrowseService/GetItems/v1`
+  (anonymous, batched, 50 ids per request). `appdetails` only carries landscape headers, and the
+  legacy `.../steam/apps/{id}/library_600x900.jpg` path 404s for some titles (adult /
+  region-restricted content in practice). When the configured country hides a game's assets
+  entirely (adult content under `cc=cn`), the client retries that chunk with `cc=us`. Poster
+  failures are logged, never surfaced as enrichment errors, and never overwrite a previously
+  stored poster: without a fresh asset URL the incoming value is `None`, which the merge treats
+  as "keep the local value".
 - `reqwest` errors are redacted with `without_url()` before they reach logs, `import_runs` or
   API responses: the official URL carries `?key=…`.
 - From mainland China, both `store.steampowered.com` and `api.steampowered.com` need a proxy.
