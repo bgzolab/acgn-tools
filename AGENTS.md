@@ -86,9 +86,11 @@ node scripts/gen-steam-fixture.mjs
 | Items that disappeared from the source | **Reported only** (`missing`), never deleted |
 | Re-importing identical data | Must be a no-op (`unchanged`), imports are idempotent |
 
-`SourceItem.status` is only adopted when the local entry is still `wishlist` (e.g. importing an
-"owned" list — the Steam library — may move a fresh entry to `backlog`, but never reverts a
-user's `playing`/`completed`). `missing` candidates are scoped per import kind
+`SourceItem.status` is adopted while the local entry is still `wishlist` or `backlog` (the
+"not user-confirmed" tiers) and never demotes to `wishlist`; a status the user set
+(`playing` / `completed` / `on_hold` / `dropped` / `ignored`) is never reverted. The Steam
+library uses this to promote games with playtime to `playing` and leaves never-played ones at
+`backlog`. `missing` candidates are scoped per import kind
 (`MissingScope::Wishlist` vs `MissingScope::Library`).
 
 Any change to this table requires updating `crates/acgn-store/tests/import_flow.rs` **and** the

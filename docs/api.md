@@ -130,11 +130,11 @@ the wishlist import:
 - The profile's **"Game details" privacy setting must be public**, otherwise Steam answers
   `{"response": {}}`. That is reported as `422 source_rejected` with a privacy hint — it is not
   confused with an empty library (which reports 0 items with a warning).
-- Owned games are imported with `status = backlog`; a wishlist entry that got bought moves to
-  `backlog` through the normal status-adoption rule (a local `playing`/`completed` is never
-  reverted). `summary.missing` counts items that were seen in an earlier library sync but are
-  gone now (refund / removed / lost family sharing) — with the library wording, not the
-  wishlist one.
+- Owned games with playtime are imported as `playing`, never-played ones as `backlog`. A
+  `wishlist` / `backlog` entry is upgraded through the normal status-adoption rule; a status
+  the user set (`playing` / `completed` / …) is never reverted. `summary.missing` counts items
+  that were seen in an earlier library sync but are gone now (refund / removed / lost family
+  sharing) — with the library wording, not the wishlist one.
 - **Playtime.** `SourceItem.playtime_minutes` is recorded in
   `entry.source_playtime_minutes`, and `entry.playtime_minutes` follows it while the user has
   not edited it by hand. A manual value wins on every later sync; `PATCH playtime_minutes: -1`

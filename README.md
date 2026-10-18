@@ -18,9 +18,9 @@ library, enrich it with store metadata, and keep track of what you actually play
 
 - **Steam wishlist import in one click** — steamID64, vanity URL or profile link; no API key
   and no cookie required
-- **Steam library sync** — owned games land in your backlog together with their cumulative
-  playtime; needs `STEAM_API_KEY` (Steam's `GetOwnedGames` endpoint refuses anonymous calls)
-  and a public "Game details" privacy setting
+- **Steam library sync** — owned games come in with their cumulative playtime; played ones
+  count as *playing*, untouched ones as *backlog*. Needs `STEAM_API_KEY` (Steam's
+  `GetOwnedGames` endpoint refuses anonymous calls) and a public "Game details" privacy setting
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
   discount, release date and the vertical library poster, fetched on demand
 - **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
@@ -45,8 +45,8 @@ library, enrich it with store metadata, and keep track of what you actually play
 - Steam playtime is tracked from the source and follows it automatically until you edit the
   number by hand; clearing your value resumes following
   ([design.md §4.5](docs/design.md#45-playtime-source-tracked-overridden-locally)).
-- An owned game moves a wishlist entry to *backlog* once; a `playing`/`completed` status is
-  never reverted.
+- An owned game with playtime is imported as *playing* (never played: *backlog*); wishlist and
+  backlog entries follow the source once, while a status you set yourself is never reverted.
 - Items that disappear from a source are only reported (`missing`), never deleted;
   re-importing unchanged data reports `unchanged` and writes nothing.
 

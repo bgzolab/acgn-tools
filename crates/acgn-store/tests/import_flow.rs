@@ -76,13 +76,18 @@ async fn dry_import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
 }
 
 /// 库存条目（`GetOwnedGames` 的映射结果）：已拥有 + 来源时长。
+/// 状态与 `acgn-steam` 的映射一致：有游玩时长 = 在玩，没玩过 = 待玩。
 fn library_item(appid: &str, title: &str, playtime_minutes: i64) -> SourceItem {
     SourceItem {
         source: Source::Steam,
         external_id: appid.to_string(),
         media_kind: MediaKind::Game,
         title: title.to_string(),
-        status: Some(Status::Backlog),
+        status: Some(if playtime_minutes > 0 {
+            Status::Playing
+        } else {
+            Status::Backlog
+        }),
         playtime_minutes: Some(playtime_minutes),
         ..Default::default()
     }
@@ -225,10 +230,10 @@ async fn user_status_and_notes_are_never_overwritten_by_import() {
 }
 
 #[tokio::test]
-async fn source_status_is_adopted_only_while_still_wishlist() {
+async fn source_status_only_applies_to_unconfirmed_entries() {
     let db = setup().await;
 
-    // 来源声明「已拥有」→ 新条目直接落到待玩
+    // 来源声明「已拥有、没玩过」→ 新条目直接落到待玩
     let mut owned = item("200", "Delta");
     owned.status = Some(Status::Backlog);
     import(&db, &[owned]).await;
@@ -239,6 +244,27 @@ async fn source_status_is_adopted_only_while_still_wishlist() {
         .unwrap()
         .unwrap();
     assert_eq!(game.entry.status, Status::Backlog);
+
+    // 用户标成在玩后，来源再报「待玩」也不能把它回退
+    db.update_entry(
+        game.game.id,
+        &EntryPatch {
+            status: Some(Status::Playing),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let mut owned = item("200", "Delta");
+    owned.status = Some(Status::Backlog);
+    import(&db, &[owned]).await;
+    let game = db
+        .get_game_by_external(Source::Steam, "200")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(game.entry.status, Status::Playing, "本地状态优先");
 }
 
 #[tokio::test]
@@ -733,7 +759,7 @@ async fn list_filters_and_stats_work() {
 // -------------------------------------------------------- 库存导入（已拥有游戏 + 时长）
 
 #[tokio::test]
-async fn library_import_creates_backlog_with_source_playtime() {
+async fn library_import_status_follows_playtime() {
     let db = setup().await;
 
     let summary = import_library(
@@ -747,11 +773,12 @@ async fn library_import_creates_backlog_with_source_playtime() {
     assert_eq!(summary.added, 2, "首次库存导入应新增 2 条");
 
     let never = get(&db, "1001").await;
-    assert_eq!(never.entry.status, Status::Backlog, "已拥有 → 待玩");
+    assert_eq!(never.entry.status, Status::Backlog, "没玩过 → 待玩");
     assert_eq!(never.entry.playtime_minutes, Some(0), "0 分钟也是有效时长");
     assert_eq!(never.entry.source_playtime_minutes, Some(0));
 
     let played = get(&db, "1002").await;
+    assert_eq!(played.entry.status, Status::Playing, "有游玩时长 → 在玩");
     assert_eq!(played.entry.playtime_minutes, Some(4621));
     assert_eq!(played.entry.source_playtime_minutes, Some(4621));
 
@@ -766,6 +793,42 @@ async fn library_import_creates_backlog_with_source_playtime() {
     .await;
     assert_eq!((again.added, again.updated, again.unchanged), (0, 0, 2));
     assert_eq!(again.missing, 0);
+}
+
+/// 来源报「在玩」时，愿望单 / 待玩会被升级；用户手动标过的状态（如已通关）永不回退。
+#[tokio::test]
+async fn source_playing_promotes_unconfirmed_states_only() {
+    let db = setup().await;
+
+    // 愿望单 → 在玩（买到手 + 有时长）
+    import(&db, &[item("2001", "Played Later")]).await;
+    let summary = import_library(&db, &[library_item("2001", "Played Later", 120)]).await;
+    assert_eq!(summary.updated, 1);
+    assert_eq!(get(&db, "2001").await.entry.status, Status::Playing);
+
+    // 待玩（0 时长）→ 在玩（第二次同步有时长了）
+    import_library(&db, &[library_item("2002", "Owned Not Played", 0)]).await;
+    assert_eq!(get(&db, "2002").await.entry.status, Status::Backlog);
+    let summary = import_library(&db, &[library_item("2002", "Owned Not Played", 30)]).await;
+    assert_eq!(summary.updated, 1);
+    let entry = get(&db, "2002").await.entry;
+    assert_eq!(entry.status, Status::Playing);
+    assert_eq!(entry.playtime_minutes, Some(30));
+
+    // 用户手动标成「已通关」：有时长也不再回退，但时长继续跟随
+    db.update_entry(
+        get(&db, "2002").await.game.id,
+        &EntryPatch {
+            status: Some(Status::Completed),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    import_library(&db, &[library_item("2002", "Owned Not Played", 60)]).await;
+    let entry = get(&db, "2002").await.entry;
+    assert_eq!(entry.status, Status::Completed, "手动状态优先");
+    assert_eq!(entry.playtime_minutes, Some(60), "时长仍跟随来源");
 }
 
 #[tokio::test]

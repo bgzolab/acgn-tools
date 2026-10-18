@@ -74,14 +74,22 @@ impl OwnedGamesPayload {
 /// 库存条目 → 统一 [`SourceItem`]。
 ///
 /// 与愿望单列表档的差异：
-/// * `status = backlog`（已拥有）：新条目直接落「待玩」；仍是愿望单的条目会被
-///   合并规则挪到待玩，而 playing/completed 等本地状态不会被回退；
+/// * **状态**：有游玩时长的算「在玩」，没玩过的已拥有游戏算「待玩」。存储层的
+///   状态收养规则会把仍是愿望单/待玩的条目升级过来，但用户手动标过的状态
+///   （已通关、搁置……）不会被回退；
 /// * `playtime_minutes` 带上 Steam 的累计时长（存储层按「手动优先」规则采纳）。
 ///
 /// 名字缺失时 **不** 造 `Steam App <appid>` 占位符：标题属于「来源给了值才覆盖」的
 /// 元数据，占位符会在下次导入时覆盖掉补全好的真实标题；空标题会被存储层保留本地值。
 pub fn owned_game_to_source_item(game: &OwnedGame) -> SourceItem {
     let appid = game.appid.to_string();
+    // 「玩过」的判定只看累计时长：0 分钟 = 买了没玩（待玩）
+    let status = if game.playtime_forever.unwrap_or(0) > 0 {
+        Status::Playing
+    } else {
+        Status::Backlog
+    };
+
     SourceItem {
         source: Source::Steam,
         external_id: appid.clone(),
@@ -89,7 +97,7 @@ pub fn owned_game_to_source_item(game: &OwnedGame) -> SourceItem {
         title: game.name.clone().unwrap_or_default(),
         cover_url: Some(header_url(&appid)),
         poster_url: Some(poster_url(&appid)),
-        status: Some(Status::Backlog),
+        status: Some(status),
         playtime_minutes: game.playtime_forever,
         metadata: serde_json::to_value(game).ok(),
         // 库存接口只有 appid / 名字 / 时长，属于「列表档」
@@ -130,16 +138,17 @@ mod tests {
         let item = owned_game_to_source_item(&games[0]);
         assert_eq!(item.external_id, "1245620");
         assert_eq!(item.title, "ELDEN RING");
-        assert_eq!(item.status, Some(Status::Backlog), "已拥有应落到待玩");
+        assert_eq!(item.status, Some(Status::Playing), "有游玩时长 = 在玩");
         assert_eq!(item.playtime_minutes, Some(4621));
         assert_eq!(item.metadata_level, MetadataLevel::List);
         assert!(item.cover_url.unwrap().ends_with("1245620/header.jpg"));
         assert!(item.metadata.is_some());
 
-        // 缺名字时不造占位符（避免覆盖本地补全好的标题），时长 0 也是有效值
+        // 缺名字时不造占位符（避免覆盖本地补全好的标题）；0 分钟 = 买了没玩 → 待玩
         let item = owned_game_to_source_item(&games[1]);
         assert_eq!(item.title, "");
         assert_eq!(item.playtime_minutes, Some(0));
+        assert_eq!(item.status, Some(Status::Backlog), "没玩过的算待玩");
     }
 
     /// 隐私受限（`{"response":{}}`）与「库存为空」必须区分：

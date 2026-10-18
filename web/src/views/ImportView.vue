@@ -267,8 +267,8 @@ onMounted(() => {
         <div class="field">
           <span class="label">库存（含游玩时长）</span>
           <div class="hint" style="margin-bottom: 8px">
-            需要「游戏详情」公开 + 后端配置 STEAM_API_KEY；已拥有的条目会落到「待玩」，
-            Steam 时长在你没有手填过时自动跟随
+            需要「游戏详情」公开 + 后端配置 STEAM_API_KEY；有游玩时长的条目算「在玩」，
+            没玩过的算「待玩」，Steam 时长在你没有手填过时自动跟随
           </div>
           <div class="row">
             <button
@@ -299,6 +299,7 @@ onMounted(() => {
           <ul class="warn-list">
             <li>元数据（标题、封面、价格、评价）以 Steam 为准</li>
             <li>状态、评分、备注、进度以你本地为准，重复同步不会被打回去</li>
+            <li>有游玩时长的已拥有游戏算「在玩」，没玩过的算「待玩」</li>
             <li>Steam 时长：没手填过就自动跟随；手填过则保留本地，清空可恢复跟随</li>
             <li>来源里消失的条目只提示、不删除</li>
             <li>首次导入只拿到列表级信息，价格/简介等要点「补全元数据」</li>

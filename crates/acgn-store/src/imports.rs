@@ -5,8 +5,9 @@
 //! 1. **元数据**（标题、封面、价格、评价……）以来源为准，来源给了值就覆盖；
 //!    来源没给值则保留本地已有的值（`None` 不算覆盖）。
 //! 2. **个人状态**（`status` / `rating` / `note` / 进度 / 时长）永远以本地为准。
-//!    只有当本地状态还是「愿望单」且来源要求其它状态时，才会跟随来源——
-//!    也就是说「你把某游戏标成在玩/已通关后，再同步愿望单不会把它打回去」。
+//!    只有当本地状态还是「愿望单 / 待玩」（用户还没表态过）时，才会跟随来源声明的
+//!    状态——也就是说「你把某游戏标成在玩/已通关后，再同步愿望单不会把它打回去」。
+//!    库存导入据此把“有游玩时长”的条目从愿望单/待玩升级为「在玩」。
 //! 3. **游玩时长**是半例外：来源值记录进 `source_playtime_minutes`，而展示值
 //!    `playtime_minutes` 只在本地没有手填过（为空或仍等于上次来源值）时跟随来源；
 //!    用户手改过就保留本地（见 `plan_merge` 的注释与 `docs/design.md` §4.5）。
@@ -886,10 +887,15 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
         entry.priority = Some(priority);
         entry_changed = true;
     }
-    // 本地状态是权威：只有仍停留在「愿望单」时才跟随来源的初始状态。
-    if entry.status == Status::Wishlist
+    // 本地状态是权威：只有「用户还没表态过」的两档（愿望单 / 待玩）才跟随来源，
+    // 且来源不能把条目打回愿望单。用户手动标过的在玩/已通关/搁置/弃坑/忽略永不回退。
+    //
+    // 库存导入靠这条把「有游玩时长」的已拥有游戏升级为在玩：适配器给出
+    // `status = playing`，仍在愿望单/待玩的条目会跟随，已通关之类的则保持本地值。
+    if matches!(entry.status, Status::Wishlist | Status::Backlog)
         && let Some(status) = item.status
         && status != Status::Wishlist
+        && entry.status != status
     {
         entry.status = status;
         entry_changed = true;

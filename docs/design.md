@@ -87,9 +87,10 @@ This is the part future two-way sync (Bangumi, Xiaoheihe) depends on. It is enfo
 Additional rules:
 
 - New entries default to `wishlist`; JSON imports may request another status.
-- `SourceItem.status` is adopted only while the local entry is still `wishlist` — importing an
-  "owned" list (the Steam library) moves a fresh entry to `backlog`, but never reverts
-  `playing` / `completed`.
+- `SourceItem.status` is adopted while the local entry is still `wishlist` or `backlog` (the
+  "not user-confirmed" tiers), never demoting to `wishlist`. The Steam library uses it to
+  promote a game with `playtime_forever > 0` to `playing` (never-played → `backlog`); a status
+  the user set (`playing` / `completed` / `on_hold` / `dropped` / `ignored`) is never reverted.
 - `missing` candidates differ per import kind (`MissingScope`): a wishlist import only reports
   entries that were on the wishlist last time, a library import only reports entries that were
   seen in a previous library sync (`source_playtime_minutes IS NOT NULL`). Mixing the two would
@@ -214,9 +215,10 @@ Three paths, chosen automatically:
 - Privacy is the only other gate: with private game details Steam answers `{"response": {}}`.
   That is reported as "make Game details public", never confused with an empty library
   (`{"response": {"game_count": 0, "games": []}}`).
-- Owned items arrive as list-level metadata and are imported with `status = backlog`; a wishlist
-  entry that got bought moves to `backlog` through the regular status-adoption rule. Playtime is
-  carried in `SourceItem.playtime_minutes` and merged per §4.5.
+- Owned items arrive as list-level metadata. A game with `playtime_forever > 0` is imported as
+  `playing`, a never-played one as `backlog`; both `wishlist` and `backlog` entries are upgraded
+  through the regular status-adoption rule, while a status the user set is never reverted.
+  Playtime is carried in `SourceItem.playtime_minutes` and merged per §4.5.
 - One request covers the whole library, so there is no pagination or rate-limit dance; the
   expensive part remains metadata enrichment.
 - Playtime caveat (verified 2026-10): Steam returns `playtime_forever: 0` for every owned game
