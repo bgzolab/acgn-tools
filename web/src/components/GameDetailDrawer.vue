@@ -98,10 +98,14 @@ async function load(id: number) {
     if (props.gameId !== id) return;
     item.value = loaded;
     noteDraft.value = loaded.entry.note ?? "";
+    // 时长的回显要区分「手填的 0」与「跟随来源的 0」：
+    // 手填 0 必须回显为 "0"（否则保存备注会被当成留空、静默改回跟随来源）；
+    // 跟随中的 0 留空（等价于「没记录」）。
+    const playtime = loaded.entry.playtime_minutes;
+    const source = loaded.entry.source_playtime_minutes;
+    const follows = source !== null && (playtime === null || playtime === source);
     playtimeMinutes.value =
-      loaded.entry.playtime_minutes && loaded.entry.playtime_minutes > 0
-        ? String(loaded.entry.playtime_minutes)
-        : "";
+      playtime !== null && !(playtime === 0 && follows) ? String(playtime) : "";
   } catch (error) {
     if (props.gameId !== id) return;
     const { title: toastTitle, message } = errorText(error);
