@@ -11,6 +11,11 @@ import { useMetaStore } from "../stores/meta";
 
 const meta = useMetaStore();
 
+/** 数字输入框可能被清空或输入非法值：只在是正整数时采用，否则退回默认值 */
+function positiveIntOr(value: number, fallback: number): number {
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 // ---------------------------------------------------------------- Steam（愿望单 + 库存）
 const steamId = ref("");
 const includeDlc = ref(true);
@@ -99,7 +104,8 @@ async function runAchievements() {
   try {
     const summary = await syncSteamAchievements({
       steam_id: input,
-      limit: achievementLimit.value,
+      // 输入框清空时不能发空字符串：后端 Option<i64> 会报英文 serde 400
+      limit: positiveIntOr(achievementLimit.value, 200),
     });
     achievementResult.value = summary;
     pushToast(
@@ -211,7 +217,7 @@ const enrichResult = ref<EnrichSummary | null>(null);
 async function runEnrich() {
   enriching.value = true;
   try {
-    enrichResult.value = await enrich(enrichLimit.value);
+    enrichResult.value = await enrich(positiveIntOr(enrichLimit.value, 20));
     const summary = enrichResult.value;
     pushToast(
       summary.succeeded > 0 ? "ok" : "warn",

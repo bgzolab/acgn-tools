@@ -71,10 +71,10 @@ const playtimeHint = computed(() => {
     }
     return "留空并保存可清空时长";
   }
-  const minutes = Number.parseInt(raw, 10);
-  if (!Number.isFinite(minutes) || minutes < 0) {
+  if (!/^\d+$/.test(raw)) {
     return "请填写非负整数（分钟），或留空以清空";
   }
+  const minutes = Number.parseInt(raw, 10);
   if (minutes === 0) {
     // 0 是「手动记 0 分钟」，不是「恢复跟随」：两条路的语义不同，提示要写清楚
     return source !== null
@@ -171,11 +171,12 @@ async function saveNoteAndPlaytime() {
     // 留空 = 清空本地手填值；有 Steam 记录时后端会恢复为来源值
     if (item.value.entry.playtime_minutes !== null) patchBody.playtime_minutes = -1;
   } else {
-    const minutes = Number.parseInt(raw, 10);
-    if (!Number.isFinite(minutes) || minutes < 0) {
+    // 必须是纯数字：parseInt("750abc") 会静默截断成 750，与用户输入不符
+    if (!/^\d+$/.test(raw)) {
       pushToast("warn", "时长不合法", "请填写非负整数（分钟），或留空以清空");
       return;
     }
+    const minutes = Number.parseInt(raw, 10);
     // 只在真的变化时才提交，避免无谓写入
     if (minutes !== (item.value.entry.playtime_minutes ?? -1)) {
       patchBody.playtime_minutes = minutes;
