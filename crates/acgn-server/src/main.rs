@@ -83,8 +83,16 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `.env` 必须在 CLI 解析之前加载（clap 会从环境变量读 ACGN_BIND / STEAM_* 等）。
+    // dotenvy 默认**不覆盖**已存在的环境变量：命令行 / 显式 export 优先，.env 只补缺。
+    let dotenv_path = load_dotenv();
+
     let cli = Cli::parse();
     init_tracing(&cli.log);
+
+    if let Some(path) = dotenv_path {
+        info!("已加载环境变量文件 {}", path.display());
+    }
 
     let steam_config = SteamConfig::from_env();
     let config = AppConfig {
@@ -273,6 +281,13 @@ fn init_tracing(level: &str) {
         .with_env_filter(filter)
         .with_target(true)
         .init();
+}
+
+/// 读取工作目录下的 `.env`（存在时）；每次启动都会重新读，改 Key 重启即生效。
+///
+/// 找不到文件时静默跳过。`.env` 在 `.gitignore` 里，密钥不会进仓库。
+fn load_dotenv() -> Option<std::path::PathBuf> {
+    dotenvy::dotenv().ok()
 }
 
 async fn shutdown_signal() {

@@ -83,8 +83,9 @@ cd web && pnpm build
 
 ## Configuration
 
-Everything is configured through environment variables — see [`.env.example`](.env.example)
-for a template.
+Everything is configured through environment variables; the server loads a `.env` file from
+the working directory on every start (explicit environment variables win over it). See
+[`.env.example`](.env.example) for a template.
 
 | Variable | Default | Description |
 |---|---|---|

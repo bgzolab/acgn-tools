@@ -181,6 +181,8 @@ case as a test first.
 
 Operational notes:
 
+- `acgn-server` loads `.env` from the working directory on every start (`dotenvy`; explicit
+  environment variables and CLI flags win). The file is gitignored — never commit it.
 - Steam endpoints (`store.steampowered.com`, `api.steampowered.com`) are unreachable without a
   proxy from mainland China. If a request times out, check the proxy's **rule routing** first:
   a `Steam → DIRECT` rule is the usual culprit.
