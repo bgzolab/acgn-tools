@@ -202,7 +202,6 @@ pub async fn sync_steam_achievements(
         )
         .await?;
 
-    let now = Utc::now();
     let mut checked = 0i64;
     let mut updated = 0i64;
     let mut promoted = 0i64;
@@ -230,9 +229,11 @@ pub async fn sync_steam_achievements(
             match result {
                 Ok(progress) => {
                     consecutive_failures = 0;
+                    // 每条取一次时间：整批可能跑一分钟，「检查于 …」应是实际检查时刻，
+                    // 而不是批次开始时间（否则同轮内时钟全相同，排序退化为按 id）
                     match state
                         .db
-                        .update_achievements(entry.game_id, progress, now)
+                        .update_achievements(entry.game_id, progress, Utc::now())
                         .await
                     {
                         Ok(outcome) => {
@@ -293,7 +294,15 @@ pub async fn sync_steam_achievements(
     }
 
     let duration_ms = started.elapsed().as_millis() as i64;
-    let pending_after = state.db.achievements_pending_count(Source::Steam).await?;
+
+    // 收尾步骤失败时也不能把运行记录留在 running：尽力补一条失败记录再上抛
+    let pending_after = match state.db.achievements_pending_count(Source::Steam).await {
+        Ok(count) => count,
+        Err(err) => {
+            finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
+            return Err(ApiError(err));
+        }
+    };
 
     // 全部失败时按失败收尾（与 enrich 同款处理）：让用户看到「稍后重试」，
     // 而不是一个 0 成功的 200。（unavailable 是正常回答，不算失败。）
@@ -303,10 +312,7 @@ pub async fn sync_steam_achievements(
         && unchanged == 0
         && let Some(err) = last_error
     {
-        let message = err.to_string();
-        if let Err(record_err) = state.db.finish_run_err(run_id, &message, duration_ms).await {
-            warn!(run_id, error = %record_err, "写入失败记录时又出错了");
-        }
+        finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
         return Err(ApiError(err));
     }
 
@@ -321,7 +327,7 @@ pub async fn sync_steam_achievements(
         warnings.push(format!("{promoted} 个游戏全成就，已标记为「已通关」"));
     }
 
-    state
+    if let Err(err) = state
         .db
         .finish_run_ok(
             run_id,
@@ -336,7 +342,11 @@ pub async fn sync_steam_achievements(
             &warnings,
             duration_ms,
         )
-        .await?;
+        .await
+    {
+        finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
+        return Err(ApiError(err));
+    }
 
     Ok(Json(AchievementSyncSummary {
         checked,
@@ -350,6 +360,13 @@ pub async fn sync_steam_achievements(
         duration_ms,
         warnings,
     }))
+}
+
+/// 收尾失败时尽力把运行记录标记为失败：绝不留一条永远「进行中」的记录。
+async fn finish_run_err_best_effort(state: &AppState, run_id: i64, error: &str, duration_ms: i64) {
+    if let Err(record_err) = state.db.finish_run_err(run_id, error, duration_ms).await {
+        warn!(run_id, error = %record_err, "写入失败记录时又出错了");
+    }
 }
 
 /// POST /api/imports —— 通用 JSON 导入（离线导入 / 备份恢复 / 其它来源接入）

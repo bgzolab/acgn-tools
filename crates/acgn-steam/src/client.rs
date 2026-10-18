@@ -304,7 +304,7 @@ impl SteamClient {
         let (steam_id, resolved_via, mut warnings) = self.resolve_id(input).await?;
 
         if let Some(fixture) = &self.fixture {
-            let Some(path) = &fixture.library_path else {
+            let Some(path) = fixture.library_path.as_ref().filter(|path| path.exists()) else {
                 return Err(Error::rejected(
                     "离线 fixture 未提供 library.json：无法演示库存导入（重新生成 fixture 或改用真实网络）",
                 ));
@@ -952,5 +952,38 @@ mod tests {
 
         assert!(fallback_candidates(&chunk, &all, "cn").is_empty());
         assert_eq!(fallback_candidates(&chunk, &HashMap::new(), "cn"), chunk);
+    }
+
+    /// fixture 缺 `library.json` / `achievements.json` 时必须明确报错，
+    /// 不能静默当成「0 条库存」/「所有游戏都没有成就」（P2 回归）。
+    #[tokio::test]
+    async fn fixture_missing_files_fail_loudly() {
+        let dir = std::env::temp_dir().join(format!("acgn-client-fixture-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        std::fs::write(
+            dir.join("wishlist.json"),
+            r#"{"steam_id":"76561198000000000","wishlist":{}}"#,
+        )
+        .expect("写 wishlist fixture");
+
+        let client = SteamClient::new(SteamConfig {
+            fixture: Some(dir.clone()),
+            ..Default::default()
+        })
+        .expect("客户端应能初始化");
+
+        let err = client
+            .fetch_library("76561198000000000")
+            .await
+            .expect_err("缺 library.json 必须报错");
+        assert!(err.to_string().contains("library.json"), "{err}");
+
+        let err = client
+            .fetch_player_achievements("76561198000000000", "1")
+            .await
+            .expect_err("缺 achievements.json 必须报错");
+        assert!(err.to_string().contains("achievements.json"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
