@@ -25,3 +25,6 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 所有数据源共享的协议版本，未来做多端同步时用于兼容性判断。
 pub const SCHEMA_REVISION: i64 = 1;
+
+/// `POST /api/games/delete` 一次最多接受的条目数（HTTP 层校验，见 `docs/api.md`）。
+pub const MAX_BATCH_DELETE: usize = 1000;

@@ -570,6 +570,35 @@ p {
   border-color: rgba(255, 215, 106, 0.5);
 }
 
+/* 批量管理：整卡选中态 + 右上角的圆形勾选 */
+.game-card.selectable {
+  user-select: none;
+}
+
+.game-card.selected {
+  border-color: rgba(124, 140, 255, 0.75);
+  box-shadow: 0 0 0 2px rgba(124, 140, 255, 0.22);
+}
+
+.pick {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(11, 14, 20, 0.72);
+  color: #fff;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+}
+
+.pick.on {
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 700;
+}
+
 .game-card .title {
   font-size: 13px;
   font-weight: 550;
