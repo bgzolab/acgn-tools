@@ -55,12 +55,16 @@ pub struct OwnedGamesPayload {
 }
 
 impl OwnedGamesPayload {
-    /// 是否是「看不见库存」（隐私设置 / 无效账号）：Steam 返回 `{"response": {}}`。
+    /// 是否是「看不见库存」（隐私设置 / 无效账号）：Steam 返回 `{"response": {}}`
+    /// ——既没有 `games` 也没有 `game_count`。
+    ///
+    /// 只要出现了 `game_count`（哪怕 0）就说明接口正常回答了「这个人有几款游戏」，
+    /// 不能把「公开但空库存」误报成隐私受限。
     pub fn privacy_blocked(&self) -> bool {
-        self.response
-            .as_ref()
-            .and_then(|response| response.games.as_ref())
-            .is_none()
+        match self.response.as_ref() {
+            None => true,
+            Some(response) => response.games.is_none() && response.game_count.is_none(),
+        }
     }
 
     /// 展开成游戏列表（缺失时为空列表）。
@@ -173,8 +177,15 @@ mod tests {
         assert!(private.privacy_blocked());
         assert!(private.into_games().is_empty());
 
+        // 空库存：带 game_count / games 字段，不能误报成隐私受限
         let empty: OwnedGamesPayload =
             serde_json::from_str(r#"{"response":{"game_count":0,"games":[]}}"#).unwrap();
+        assert!(!empty.privacy_blocked());
+        assert!(empty.into_games().is_empty());
+
+        // 只有 game_count 的简化形态也算正常回答
+        let empty: OwnedGamesPayload =
+            serde_json::from_str(r#"{"response":{"game_count":0}}"#).unwrap();
         assert!(!empty.privacy_blocked());
         assert!(empty.into_games().is_empty());
     }
