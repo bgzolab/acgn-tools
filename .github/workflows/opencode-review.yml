@@ -4,18 +4,132 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# 同一 PR 连续推送时取消整个旧 run（包括还在等 ci 的 quality-gates），
+# 避免旧 run 的门禁 job 继续占着 runner 空转。
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  opencode-review:
+  # 先等 ci workflow 的 fmt / clippy / test / typecheck / build 全部通过，再开始审查。
+  # 这里不重复跑检查：ci 是独立 workflow，runner 时间与审查配额都只花一次；
+  # 审查 agent 也不会再在会话里重跑整套质量门。
+  quality-gates:
     if: github.event.pull_request.user.login == 'bgzo' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    # 冷缓存下 Rust 编译 + 测试的最坏情况；超时后明确失败，而不是无限等待
+    timeout-minutes: 40
+    permissions:
+      # 查询 ci workflow run 需要 actions: read
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for the ci workflow to succeed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # 35 分钟轮询预算（job 上限 40 分钟，留出收尾时间）
+          deadline=$((SECONDS + 35 * 60))
+          # ci run 一般几秒内就会出现；5 分钟还看不到通常是 PR 还没有 ci.yml
+          # （旧 PR 未 rebase 到含 CI 的 main），提前失败比空等 35 分钟更清楚
+          no_run_deadline=$((SECONDS + 5 * 60))
+          last_state=""
+
+          # 只看与本次审查由同一事件触发的 ci run：ready_for_review 会重新触发 ci，
+          # draft 阶段成功/失败的旧 run 不能算数；同一事件下两个 workflow run 的
+          # 创建时间只差几秒，留 120s 余量。取不到本 run 的 created_at 时退化为
+          # 「最近 10 分钟内创建的 ci run」。
+          cutoff=$(( $(date +%s) - 600 ))
+          review_created_at=""
+          if review_created_at=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at' 2>/dev/null) && [ -n "${review_created_at}" ]; then
+            created_epoch="$(date -d "${review_created_at}" +%s || true)"
+            if [ -n "${created_epoch}" ]; then
+              cutoff=$((created_epoch - 120))
+            fi
+          else
+            echo "::warning::could not read this run's created_at; using a 10-minute cutoff"
+          fi
+
+          while :; do
+            runs=""
+            # 必须显式 --method GET：gh api 带 -f 参数时默认改用 POST，
+            # 而 actions/runs 只有 GET，POST 会 404（会被静默忽略并等到超时）。
+            if ! runs=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs" \
+              -f head_sha="${HEAD_SHA}" -f event=pull_request -f per_page=50 2>/dev/null); then
+              echo "::warning::failed to query workflow runs; retrying"
+            fi
+
+            run=""
+            if [ -n "${runs}" ]; then
+              # 同一个 head SHA 可能对应多次 run（重跑 / 并发取消 / draft 阶段），
+              # 只看 created_at 不早于本次审查事件的 ci run，取其中最新的一次。
+              # 不用 workflows/ci.yml/runs 端点：PR 首次引入 ci.yml 时该文件还不在默认分支上。
+              # 字段顺序把 URL 放在空 conclusion 之前：read 的 IFS 是 tab（空白符），
+              # 连续 tab 会被折叠，空字段放中间会把 URL 错位吞掉。
+              run=$(jq -r --argjson cutoff "${cutoff}" '
+                [.workflow_runs[]
+                 | select(.path == ".github/workflows/ci.yml")
+                 | select((.created_at | fromdateiso8601) >= $cutoff)]
+                | sort_by(.created_at)
+                | last
+                | select(. != null)
+                | [.id, .status, .html_url, (.conclusion // "")]
+                | @tsv
+              ' <<<"${runs}")
+            fi
+
+            if [ -n "${run}" ]; then
+              IFS=$'\t' read -r run_id status run_url conclusion <<<"${run}"
+              state="${status}/${conclusion}"
+              if [ "${state}" != "${last_state}" ]; then
+                echo "ci run ${run_id}: ${status}${conclusion:+ (${conclusion})} ${run_url}"
+                last_state="${state}"
+              fi
+
+              if [ "${status}" = "completed" ]; then
+                if [ "${conclusion}" = "success" ]; then
+                  {
+                    echo "### Quality gates"
+                    echo ""
+                    echo "- ci run: ${run_url}"
+                    echo "- result: success"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                fi
+
+                echo "::error::ci workflow concluded '${conclusion}'. Fix the checks before the opencode review can run: ${run_url}" >&2
+                exit 1
+              fi
+            elif [ "${last_state}" != "missing" ]; then
+              # ci run 尚未创建（workflow 刚触发时 API 可能还没返回），继续等
+              echo "Waiting for a ci workflow run for ${HEAD_SHA}..."
+              last_state="missing"
+            fi
+
+            if [ "${last_state}" = "missing" ] && [ "${SECONDS}" -ge "${no_run_deadline}" ]; then
+              echo "::error::No ci workflow run appeared for ${HEAD_SHA} within 5 minutes. Push a new commit or rebase this PR onto main so the ci workflow is triggered." >&2
+              exit 1
+            fi
+
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "::error::Timed out waiting for the ci workflow to finish (head ${HEAD_SHA}). Make sure .github/workflows/ci.yml exists on the PR head." >&2
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+  opencode-review:
+    needs: quality-gates
+    if: github.event.pull_request.user.login == 'bgzo' && !github.event.pull_request.draft && needs.quality-gates.result == 'success'
     runs-on: ubuntu-latest
     # 三轮审查预算 20 + 25 + 15 = 60 分钟，加初始化 / 会话导出开销：最坏路径也留有余量，
     # 保证三轮都超时时仍能走到「会话快照 + 门禁校验」步骤，而不是被 job 上限中途取消；
     # 正常一次 2-10 分钟完成。
     timeout-minutes: 80
-    # 同一 PR 连续推送时，取消旧的审查，避免重复评论与配额浪费
-    concurrency:
-      group: opencode-review-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
     permissions:
       # 只读 contents：即使工作区变脏，opencode 也无法 push
       contents: read
@@ -35,6 +149,12 @@ jobs:
       USE_GITHUB_TOKEN: "true"
       PROMPT: |
         Review this PR. Focus on issues, not on evaluating the PR itself.
+
+        The `ci` workflow has already run the repository quality gates for this commit
+        (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+        `cargo test --workspace`, `pnpm typecheck`, and a production build) and passed before
+        this review started. Do not re-run the full gates; trust that result. Only run a
+        targeted command when it is essential to confirm a specific suspected defect.
 
         Find correctness, regression, security, robustness, maintainability, and test issues. Also suggest meaningful improvements.
 

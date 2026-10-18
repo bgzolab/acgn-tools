@@ -1,0 +1,104 @@
+name: ci
+
+# 所有 PR（含 draft）先跑同一套质量门；opencode-review 会等本 workflow 成功后才启动
+# 审查会话，reviewer 不再在对话里重复跑 fmt/clippy/test/pnpm。
+# 单独成 workflow 而不是塞进 review：CI 结果可以独立查看、重跑，也方便以后加分支保护。
+on:
+  pull_request:
+    # ready_for_review：draft 阶段没跑过 ci 的分支（例如 CI 上线前创建的 PR），
+    # 转 ready 时补一次，保证 opencode-review 的等待门总能找到对应的 ci run。
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同一 ref 连续推送时取消旧 run，避免重复占用 runner
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  backend:
+    name: backend (fmt + clippy + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      # 固定到本地验证过的版本：clippy -D warnings 对工具链升级很敏感，
+      # 避免 stable 漂移导致与代码无关的红灯；升级时同步更新这里。
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: rustfmt, clippy
+      - name: Cache Rust dependencies and build artifacts
+        uses: Swatinem/rust-cache@v2
+      # 三个门都跑完再统一判定：某个门失败时后面的门仍然执行，一次 CI 暴露全部问题。
+      - name: Check formatting
+        id: fmt
+        continue-on-error: true
+        run: cargo fmt --all --check
+      - name: Run clippy
+        id: clippy
+        continue-on-error: true
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run tests
+        id: test
+        continue-on-error: true
+        # --no-fail-fast：单个套件失败时继续跑完其余套件，方便一次看到全部失败
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Enforce backend quality gates
+        if: steps.fmt.outcome != 'success' || steps.clippy.outcome != 'success' || steps.test.outcome != 'success'
+        run: |
+          echo "::error::backend quality gates failed: fmt=${{ steps.fmt.outcome }}, clippy=${{ steps.clippy.outcome }}, test=${{ steps.test.outcome }}"
+          exit 1
+
+  frontend:
+    name: frontend (typecheck + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # 构建输出写到 runner 的临时目录，避免 CI 在仓库里留下 web/dist。
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: pnpm typecheck
+      - name: Build (temporary output directory)
+        id: build
+        continue-on-error: true
+        run: pnpm exec vite build --outDir "$RUNNER_TEMP/web-dist" --emptyOutDir
+      - name: Verify build output
+        if: steps.build.outcome == 'success'
+        run: test -s "$RUNNER_TEMP/web-dist/index.html"
+      - name: Enforce frontend quality gates
+        if: steps.typecheck.outcome != 'success' || steps.build.outcome != 'success'
+        run: |
+          echo "::error::frontend quality gates failed: typecheck=${{ steps.typecheck.outcome }}, build=${{ steps.build.outcome }}"
+          exit 1
