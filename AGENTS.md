@@ -61,9 +61,12 @@ cd web && pnpm install && pnpm dev
 
 # quality gates — all four must pass before you push
 cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 cd web && pnpm typecheck && pnpm build
+
+# CI runs the same gates on every PR (.github/workflows/ci.yml);
+# opencode-review waits for that workflow and does not re-run them itself.
 
 # regenerate the offline fixtures (this one DOES hit the network)
 node scripts/gen-steam-fixture.mjs
@@ -177,6 +180,11 @@ Operational notes:
   a `Steam → DIRECT` rule is the usual culprit.
 - `appdetails` is rate limited; enrichment runs with concurrency 2 + a 400 ms gap and stops
   gracefully on HTTP 429, leaving already-fetched items committed.
+- `.github/workflows/ci.yml` is the only place that runs the quality gates on pull requests.
+  The `opencode-review` workflow's `quality-gates` job waits for the latest `ci` run on the PR
+  head SHA and starts the review only after it succeeds; a failing `ci` run skips the review
+  instead of spending review tokens. Change a gate in `ci.yml`, not in the review workflow
+  (and update the review prompt's gate list when the commands change).
 - The review CI needs the `OPENCODE_API_KEY` secret on the repository (or an organization secret
   granted to it). Without it the provider cannot be resolved and the run fails with
   `Model not found: opencode-go/glm-5.3-flash`. Organization secrets are **not** inherited
@@ -192,7 +200,9 @@ Operational notes:
 
 A change is ready when all of the following hold:
 
-1. `cargo fmt`, `cargo clippy … -D warnings`, `cargo test --workspace`, `pnpm typecheck && pnpm build` pass.
+1. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+   `cargo test --workspace --locked`, `pnpm typecheck && pnpm build` pass.
+   The same gates run in the `ci` workflow; `opencode-review` starts only after they pass.
 2. New behaviour is covered by a test, or the PR explains why it cannot be.
 3. Sync semantics / API / env-var docs are updated when they changed (`README.md`, `docs/api.http`, this file).
 4. No secrets, databases, build output, or hand-edited fixtures are committed.

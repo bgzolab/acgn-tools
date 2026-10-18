@@ -4,18 +4,166 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# 同一 PR 连续推送时取消整个旧 run（包括还在等 ci 的 quality-gates），
+# 避免旧 run 的门禁 job 继续占着 runner 空转。
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
-  opencode-review:
+  # 先等 ci workflow 的 fmt / clippy / test / typecheck / build 全部通过，再开始审查。
+  # 质量门本身只跑一次：ci 是独立 workflow，审查 agent 也不会在会话里重跑整套门。
+  #
+  # 为什么门禁用「轮询 job」而不是 workflow_run 事件：opencode github handler 只认
+  # pull_request / issue_comment 这类事件，workflow_run 触发的 run 无法在 PR 上评论，
+  # 审查必须由本 workflow 的 pull_request run 发起，所以只能在这个 run 里同步等 CI。
+  # 代价是等待期间占一个 runner（只轮询、不构建，CI 有缓存时约 0.5-3 分钟），
+  # 换来「CI 失败就不启动审查」且不依赖额外 action；这是有意的取舍。
+  quality-gates:
     if: github.event.pull_request.user.login == 'bgzo' && !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    # 看到 ci run 后等待窗口延展到 38 分钟（覆盖 runner 排队 + backend 的 30 分钟上限）；
+    # job 上限 45 分钟，保证循环超时前能打印明确错误而不是被中途取消
+    timeout-minutes: 45
+    permissions:
+      # 查询 ci workflow run 需要 actions: read
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for the ci workflow to succeed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # ci run 一般几秒内就会出现；5 分钟还看不到通常是 PR 还没有 ci.yml
+          # （旧 PR 未 rebase 到含 CI 的 main），提前失败比空等更清楚
+          no_run_deadline=$((SECONDS + 5 * 60))
+          # 硬上限：job 是 45 分钟，循环最多到 42 分钟，留出收尾时间
+          hard_deadline=$((SECONDS + 42 * 60))
+          deadline=$hard_deadline
+          # 一旦见过 run，就只在硬上限处超时；no_run_deadline 只用于「从未见过 run」，
+          # 避免把瞬态查询失败误判成「run 不存在」而虚假失败
+          seen_run=false
+          last_state=""
+          query_err_file="$(mktemp)"
+          trap 'rm -f "${query_err_file}"' EXIT
+
+          # 只看与本次审查由同一事件触发的 ci run：ready_for_review 会重新触发 ci，
+          # draft 阶段成功/失败的旧 run 不能算数；同一事件下两个 workflow run 的
+          # 创建时间只差几秒，留 120s 余量。取不到本 run 的 created_at 时退化为
+          # 「最近 10 分钟内创建的 ci run」。
+          cutoff=$(( $(date +%s) - 600 ))
+          review_created_at=""
+          if review_created_at=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" --jq '.created_at' 2>/dev/null) && [ -n "${review_created_at}" ]; then
+            created_epoch="$(date -d "${review_created_at}" +%s || true)"
+            if [ -n "${created_epoch}" ]; then
+              cutoff=$((created_epoch - 120))
+            fi
+          else
+            echo "::warning::could not read this run's created_at; using a 10-minute cutoff"
+          fi
+
+          while :; do
+            runs=""
+            query_error=""
+            # 必须显式 --method GET：gh api 带 -f 参数时默认改用 POST，
+            # 而 actions/runs 只有 GET，POST 会 404。
+            # stderr 单独落盘：成功后混进 stdout 会破坏 jq 解析。
+            if ! runs=$(gh api --method GET "repos/${GITHUB_REPOSITORY}/actions/runs" \
+              -f head_sha="${HEAD_SHA}" -f event=pull_request -f per_page=50 2>"${query_err_file}"); then
+              query_error="$(head -c 200 "${query_err_file}" | tr '\n' ' ')"
+              runs=""
+              echo "::warning::failed to query workflow runs; retrying: ${query_error}"
+            fi
+
+            run=""
+            if [ -n "${runs}" ]; then
+              # 同一个 head SHA 可能对应多次 run（重跑 / 并发取消 / draft 阶段），
+              # 只看 created_at 不早于本次审查事件的 ci run，取其中最新的一次。
+              # 不用 workflows/ci.yml/runs 端点：PR 首次引入 ci.yml 时该文件还不在默认分支上。
+              # 字段顺序把 URL 放在空 conclusion 之前：read 的 IFS 是 tab（空白符），
+              # 连续 tab 会被折叠，空字段放中间会把 URL 错位吞掉。
+              if ! run=$(jq -r --argjson cutoff "${cutoff}" '
+                [.workflow_runs[]
+                 | select(.path == ".github/workflows/ci.yml")
+                 | select((.created_at | fromdateiso8601) >= $cutoff)]
+                | sort_by(.created_at)
+                | last
+                | select(. != null)
+                | [.id, .status, .html_url, (.conclusion // "")]
+                | @tsv
+              ' <<<"${runs}"); then
+                query_error="invalid JSON from the workflow runs endpoint"
+                echo "::warning::failed to parse the workflow runs response; retrying"
+                run=""
+              fi
+            fi
+
+            if [ -n "${run}" ]; then
+              if [ "${seen_run}" != "true" ]; then
+                seen_run=true
+                # 延展到 38 分钟：ci backend 自己允许跑 30 分钟，且 run 创建后可能先
+                # 排队几分钟才真正开始；32 分钟会在「排队 + 30 分钟」时提前误判超时。
+                # 38 仍小于 42 分钟硬上限。
+                candidate=$((SECONDS + 38 * 60))
+                if [ "${candidate}" -lt "${hard_deadline}" ]; then
+                  deadline="${candidate}"
+                fi
+              fi
+
+              IFS=$'\t' read -r run_id status run_url conclusion <<<"${run}"
+              state="${status}/${conclusion}"
+              if [ "${state}" != "${last_state}" ]; then
+                echo "ci run ${run_id}: ${status}${conclusion:+ (${conclusion})} ${run_url}"
+                last_state="${state}"
+              fi
+
+              if [ "${status}" = "completed" ]; then
+                if [ "${conclusion}" = "success" ]; then
+                  {
+                    echo "### Quality gates"
+                    echo ""
+                    echo "- ci run: ${run_url}"
+                    echo "- result: success"
+                  } >> "$GITHUB_STEP_SUMMARY"
+                  exit 0
+                fi
+
+                echo "::error::ci workflow concluded '${conclusion}'. Fix the checks before the opencode review can run: ${run_url}" >&2
+                exit 1
+              fi
+            # 只有查询成功且确实没有匹配的 ci run 时才进入 missing；
+            # 查询失败时保留原状态，避免把瞬态抖动误判成「run 不存在」
+            elif [ -z "${query_error}" ] && [ "${last_state}" != "missing" ]; then
+              echo "Waiting for a ci workflow run for ${HEAD_SHA}..."
+              last_state="missing"
+            fi
+
+            if [ "${seen_run}" != "true" ] && [ "${SECONDS}" -ge "${no_run_deadline}" ]; then
+              echo "::error::No ci workflow run appeared for ${HEAD_SHA} within 5 minutes (the actions API may also have been unavailable). Push a new commit or rebase this PR onto main so the ci workflow is triggered." >&2
+              exit 1
+            fi
+
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              # 走到这里说明看过 run 但没等到它完成（等不到 run 有单独的 5 分钟分支），
+              # 所以文案指向 run 本身，而不是「ci.yml 不在 head 上」
+              echo "::error::Timed out waiting for the ci run to finish (head ${HEAD_SHA}${run_url:+, last seen run: ${run_url}}). Check the ci workflow status." >&2
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+  opencode-review:
+    needs: quality-gates
+    if: github.event.pull_request.user.login == 'bgzo' && !github.event.pull_request.draft && needs.quality-gates.result == 'success'
     runs-on: ubuntu-latest
     # 三轮审查预算 20 + 25 + 15 = 60 分钟，加初始化 / 会话导出开销：最坏路径也留有余量，
     # 保证三轮都超时时仍能走到「会话快照 + 门禁校验」步骤，而不是被 job 上限中途取消；
     # 正常一次 2-10 分钟完成。
     timeout-minutes: 80
-    # 同一 PR 连续推送时，取消旧的审查，避免重复评论与配额浪费
-    concurrency:
-      group: opencode-review-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
     permissions:
       # 只读 contents：即使工作区变脏，opencode 也无法 push
       contents: read
@@ -35,6 +183,12 @@ jobs:
       USE_GITHUB_TOKEN: "true"
       PROMPT: |
         Review this PR. Focus on issues, not on evaluating the PR itself.
+
+        The `ci` workflow has already run the repository quality gates for this commit
+        (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`,
+        `cargo test --workspace --locked`, `pnpm typecheck`, and a production build) and passed
+        before this review started. Do not re-run the full gates; trust that result. Only run a
+        targeted command when it is essential to confirm a specific suspected defect.
 
         Find correctness, regression, security, robustness, maintainability, and test issues. Also suggest meaningful improvements.
 

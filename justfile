@@ -48,14 +48,18 @@ reset:
 fmt:
     cargo fmt --all
 
+# 与 CI 相同的格式检查（不写文件）
+fmt-check:
+    cargo fmt --all --check
+
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --locked -- -D warnings
 
 test:
-    cargo test --workspace
+    cargo test --workspace --locked
 
 check:
-    cargo check --workspace --all-targets
+    cargo check --workspace --all-targets --locked
 
 # 前端类型检查 + 构建
 web-check:
@@ -64,8 +68,9 @@ web-check:
 web-build:
     cd web && pnpm build
 
-# 全量自测：后端 + 前端
-verify: check test web-check web-build
+# 全量自测：与 ci workflow 同一组门（fmt check + clippy + 测试 + 前端类型检查 + 构建）；
+# 依次执行、遇错即停（CI 侧会聚合全部失败后再一起报告）
+verify: fmt-check lint test web-check web-build
 
 # ---------------------------------------------------------------- 构建
 
