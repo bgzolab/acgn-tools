@@ -46,23 +46,40 @@ const FALLBACK_COUNTRY: &str = "us";
 /// **必须脱敏**：reqwest 的 `Display` 会带上完整请求 URL（含 query），而官方愿望单接口的
 /// API Key 就在 query 里（`?key=...`）。一旦原样透传，密钥会经 warnings → `import_runs`、
 /// `ApiError` → HTTP 响应、tracing → 日志三处泄漏，且永久留在数据库的同步历史里。
-/// `without_url()` 只去掉 URL 字段，`is_timeout()` / `is_decode()` 等分类信息都保留。
+/// 这里去掉 query（保留 host/path 方便定位是哪个接口），`is_timeout()` / `is_decode()`
+/// 等分类信息都保留。
+fn map_net_error(err: reqwest::Error) -> Error {
+    // query 里可能有 API Key / cursor：只保留协议 + 域名 + 路径
+    let endpoint = err.url().map(|url| {
+        let mut clean = url.clone();
+        clean.set_query(None);
+        clean.set_fragment(None);
+        clean.to_string()
+    });
+    let timeout = err.is_timeout();
+    let decode = err.is_decode();
+    let err = err.without_url();
+    let message = match endpoint {
+        Some(endpoint) => format!("{err}（{endpoint}）"),
+        None => err.to_string(),
+    };
+
+    if timeout {
+        Error::network(format!("请求超时: {message}"))
+    } else if decode {
+        Error::upstream(format!("响应解析失败: {message}"))
+    } else {
+        Error::network(message)
+    }
+}
+
 pub(crate) trait ReqwestExt<T> {
     fn net(self) -> Result<T>;
 }
 
 impl<T> ReqwestExt<T> for std::result::Result<T, reqwest::Error> {
     fn net(self) -> Result<T> {
-        self.map_err(|err| {
-            let err = err.without_url();
-            if err.is_timeout() {
-                Error::network(format!("请求超时: {err}"))
-            } else if err.is_decode() {
-                Error::upstream(format!("响应解析失败: {err}"))
-            } else {
-                Error::network(err)
-            }
-        })
+        self.map_err(map_net_error)
     }
 }
 
@@ -205,6 +222,37 @@ impl SteamClient {
         self.fixture.as_ref()
     }
 
+    /// 幂等 GET（Steam 接口全部是 GET）：统一请求头 + 网络层失败重试一次。
+    ///
+    /// 代理 / VPN 切换或连接池里的旧 keep-alive 会让单次请求报 `error sending request`，
+    /// 重试一次通常即可恢复；超时不重试（等两遍只会更久）。HTTP 4xx/5xx 不在这里处理，
+    /// 由调用方按语义分类（限流 / 隐私 / 下架）。
+    async fn get(&self, url: &str, accept: &str) -> Result<reqwest::Response> {
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            match self
+                .http
+                .get(url)
+                .header(ACCEPT, accept)
+                .header(ACCEPT_LANGUAGE, self.config.language.as_str())
+                .send()
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    let timeout = err.is_timeout();
+                    let err = map_net_error(err);
+                    if timeout || attempts >= 2 {
+                        return Err(err);
+                    }
+                    warn!(error = %err, "Steam 请求失败，250ms 后重试一次");
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+    }
+
     /// 解析 ID：数字直接用；个性域名走社区 XML（无需 Key）。
     pub async fn resolve_id(&self, input: &str) -> Result<(String, &'static str, Vec<String>)> {
         let mut warnings = Vec::new();
@@ -227,12 +275,8 @@ impl SteamClient {
 
                 let url = vanity_resolve_url(&vanity);
                 let body = self
-                    .http
-                    .get(url)
-                    .header(ACCEPT, "application/xml, text/xml")
-                    .send()
-                    .await
-                    .net()?
+                    .get(&url, "application/xml, text/xml")
+                    .await?
                     .text()
                     .await
                     .net()?;
@@ -260,13 +304,7 @@ impl SteamClient {
 
         if let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) {
             let url = player_summaries_url(api_key, steam_id);
-            let response = self
-                .http
-                .get(url)
-                .header(ACCEPT, "application/json")
-                .send()
-                .await
-                .net()?;
+            let response = self.get(&url, "application/json").await?;
 
             let status = response.status();
             if !status.is_success() {
@@ -282,13 +320,7 @@ impl SteamClient {
         }
 
         let url = profile_xml_url(steam_id);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/xml, text/xml")
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/xml, text/xml").await?;
         let status = response.status();
         let body = response.text().await.net()?;
 
@@ -399,13 +431,7 @@ impl SteamClient {
         };
 
         let url = owned_games_url(api_key, &steam_id, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if matches!(status.as_u16(), 401 | 403) {
@@ -478,13 +504,7 @@ impl SteamClient {
         };
 
         let url = player_achievements_url(api_key, steam_id, appid, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if status.as_u16() == 429 {
@@ -528,14 +548,7 @@ impl SteamClient {
 
         for page in 0..MAX_WISHLIST_PAGES {
             let url = public_wishlist_url(steam_id, page);
-            let response = self
-                .http
-                .get(url)
-                .header(ACCEPT, "application/json")
-                .header(ACCEPT_LANGUAGE, self.config.language.as_str())
-                .send()
-                .await
-                .net()?;
+            let response = self.get(&url, "application/json").await?;
 
             let status = response.status();
 
@@ -630,12 +643,8 @@ impl SteamClient {
         for page in 0..MAX_OFFICIAL_PAGES {
             let url = official_wishlist_url(key, steam_id, cursor.as_deref());
             let value: serde_json::Value = self
-                .http
-                .get(url)
-                .header(ACCEPT, "application/json")
-                .send()
-                .await
-                .net()?
+                .get(&url, "application/json")
+                .await?
                 .json()
                 .await
                 .net()?;
@@ -754,14 +763,7 @@ impl SteamClient {
         country: &str,
     ) -> Result<Option<SourceItem>> {
         let url = app_details_url(appid, country, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if status.as_u16() == 429 {
@@ -846,14 +848,7 @@ impl SteamClient {
         country: &str,
     ) -> Result<HashMap<String, StoreCatalogEntry>> {
         let url = store_items_url(appids, country, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -1001,8 +996,9 @@ mod tests {
 
     /// P1 回归：reqwest 的错误 Display 带完整请求 URL（含 query），而官方接口的
     /// API Key 就在 query 里——`net()` 必须脱敏，否则密钥会进日志/import_runs/API 响应。
+    /// host/path 要保留，方便定位是哪个接口失败。
     #[tokio::test]
-    async fn net_redacts_url_and_query() {
+    async fn net_redacts_query_but_keeps_the_endpoint() {
         let client = reqwest::Client::new();
         let err = client
             .get("http://127.0.0.1:1/IWishlistService/GetWishlist/v1/?key=SECRET_KEY_FOR_TEST&steamid=1")
@@ -1017,8 +1013,12 @@ mod tests {
             "错误信息里不能出现 API Key：{text}"
         );
         assert!(
-            !text.contains("IWishlistService"),
-            "错误信息里不应包含请求 URL：{text}"
+            !text.contains("steamid=") && !text.contains("key="),
+            "query 必须被去掉（可能含 Key / cursor）：{text}"
+        );
+        assert!(
+            text.contains("http://127.0.0.1:1/IWishlistService/GetWishlist/v1/"),
+            "应保留 host/path 方便定位接口：{text}"
         );
         assert!(
             matches!(err, acgn_core::Error::Network(_)),
