@@ -21,6 +21,10 @@ library, enrich it with store metadata, and keep track of what you actually play
 - **Steam library sync** — owned games come in with their cumulative playtime; played ones
   count as *playing*, untouched ones as *backlog*. Needs `STEAM_API_KEY` (Steam's
   `GetOwnedGames` endpoint refuses anonymous calls) and a public "Game details" privacy setting
+- **Multiple Steam accounts** — add an account once (steamID64 / vanity / profile link) and it is
+  remembered with its persona name, avatar, profile link and region; later syncs pick the account
+  from a list instead of retyping the ID. Games are linked to the account that owns / wishes for
+  them, the library filters by account, and prices are stored per account region
 - **Achievement check** — per-game achievement progress; a game with all achievements is
   marked *completed* automatically, while a status you set yourself is never reverted
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
@@ -42,6 +46,11 @@ library, enrich it with store metadata, and keep track of what you actually play
 
 ### Sync semantics
 
+- Imports are **per account**: each account keeps its own wishlist / library associations and
+  its own `missing` list — an item refunded on one account is not reported against another.
+- When several accounts own the same game, the tracked playtime is the **maximum** across
+  accounts: syncing a low-playtime alt never overwrites the main account's hours
+  ([design.md §4.6](docs/design.md#46-multiple-source-accounts)).
 - Metadata (title, cover, price, review, …) follows the source; your status, rating, notes,
   progress and favorites always win — re-syncing never reverts them.
 - Steam playtime is tracked from the source and follows it automatically until you edit the
@@ -52,6 +61,9 @@ library, enrich it with store metadata, and keep track of what you actually play
 - The achievement check (a separate action) marks a game with all achievements as *completed*;
   `completed` / `on_hold` / `dropped` / `ignored` stay untouched, and so does a manual
   `playing` unless the game actually has all achievements.
+- Prices are kept **per account region**: when an account's effective region (`country_override`
+  ?? profile `loccountrycode`) differs from `STEAM_COUNTRY`, enrichment also fetches that
+  region's price and the card / detail drawer show the selected account's regional price.
 - Items that disappear from a source are only reported (`missing`), never deleted;
   re-importing unchanged data reports `unchanged` and writes nothing.
 
@@ -68,9 +80,9 @@ cargo run -p acgn-server -- serve
 cd web && pnpm install && pnpm dev     # → http://127.0.0.1:5173
 ```
 
-Open the app, switch to **Import & Sync**, paste your SteamID64 (or vanity URL), and import.
-Library sync additionally needs a Steam Web API key (`STEAM_API_KEY`, see below) and a public
-"Game details" privacy setting.
+Open the app, switch to **Import & Sync**, add your SteamID64 (or vanity URL) as an account,
+then sync its wishlist or library from the account card. Library sync additionally needs a
+Steam Web API key (`STEAM_API_KEY`, see below) and a public "Game details" privacy setting.
 
 Want to look around without touching the network first?
 
@@ -135,6 +147,7 @@ itself. [`AGENTS.md`](AGENTS.md) lists every command and convention.
 
 - [x] Domain model, SQLite storage and import merge semantics
 - [x] Steam wishlist + library (owned games with playtime) import, metadata enrichment, dashboard, import history
+- [x] Multiple Steam accounts: profiles, account-scoped sync/missing, account filter and per-region prices
 - [ ] Price history and discount alerts
 - [ ] Bangumi integration (anime / comic / novel, two-way progress sync)
 - [ ] Xiaoheihe (小黑盒) — no public API; needs research or a manual import path
