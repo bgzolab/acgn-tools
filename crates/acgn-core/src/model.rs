@@ -223,6 +223,22 @@ impl MediaKind {
         }
     }
 
+    /// Steam `IStoreBrowseService/GetItems` 的整型 `type`：
+    /// `0` 游戏、`1/2` 包/捆绑、`4` DLC、`6` 软件，音乐/硬件/视频/系列归到 `Other`。
+    ///
+    /// 未知值返回 `None`：调用方应保留原判断，而不是把一个正常游戏误判成 `Other`
+    /// 后被 `include_non_games` 过滤掉。
+    pub fn from_store_browse_type(value: i64) -> Option<Self> {
+        match value {
+            0 => Some(MediaKind::Game),
+            1 | 2 => Some(MediaKind::Bundle),
+            3 | 5 | 7 | 8 => Some(MediaKind::Other),
+            4 => Some(MediaKind::Dlc),
+            6 => Some(MediaKind::Software),
+            _ => None,
+        }
+    }
+
     pub fn from_str_lossy(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "game" => Some(MediaKind::Game),

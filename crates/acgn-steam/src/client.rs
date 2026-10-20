@@ -16,7 +16,9 @@ use tracing::{debug, warn};
 
 use crate::achievements::parse_player_achievements;
 use crate::appdetails::parse_app_details;
-use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
+use crate::assets::{
+    STORE_ITEMS_CHUNK, StoreCatalogEntry, apply_store_catalog, parse_store_catalog, store_items_url,
+};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
 use crate::library::{OwnedGamesPayload, owned_game_to_source_item};
@@ -64,11 +66,11 @@ impl<T> ReqwestExt<T> for std::result::Result<T, reqwest::Error> {
     }
 }
 
-/// 计算需要换 `us` 重试的 appid：本块在配置国家下没拿到 capsule 的子集。
+/// 计算需要换 `us` 重试的 appid：本块在配置国家下没拿到目录信息的子集。
 /// 配置国家已经是 `us` 时返回空（不再重试）。
-fn fallback_candidates(
+fn fallback_candidates<V>(
     chunk: &[String],
-    primary: &HashMap<String, String>,
+    primary: &HashMap<String, V>,
     country: &str,
 ) -> Vec<String> {
     if country == FALLBACK_COUNTRY {
@@ -348,10 +350,6 @@ impl SteamClient {
                 ));
                 let (items, mut extra) = self.fetch_official_wishlist(&steam_id).await?;
                 warnings.append(&mut extra);
-                warnings.push(
-                    "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取名称/价格/简介"
-                        .to_string(),
-                );
                 Ok(ImportFetch {
                     steam_id,
                     items,
@@ -703,7 +701,35 @@ impl SteamClient {
             cursor = Some(next);
         }
 
+        // 官方接口只有 appid：批量补名称 / 类型 / 海报（匿名、50 条/次），
+        // 避免把一整页 `Steam App XXX` 占位符直接落库。
+        self.fill_wishlist_catalog(&mut items, &mut warnings).await;
+
         Ok((items, warnings))
+    }
+
+    /// 官方愿望单的批量补全：商店目录（`IStoreBrowseService`）带本地化名称、类型与海报。
+    ///
+    /// 失败是**非致命**的：保留占位标题，用户仍可稍后「补全元数据」逐条修复。
+    async fn fill_wishlist_catalog(&self, items: &mut [SourceItem], warnings: &mut Vec<String>) {
+        if items.is_empty() {
+            return;
+        }
+
+        let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
+        let catalog = self.store_catalog(&appids).await;
+        let missing = apply_store_catalog(items, &catalog);
+
+        if catalog.is_empty() {
+            warnings.push(
+                "商店目录接口没有返回名称（可能被限流）：标题先显示为占位符，可稍后用「补全元数据」修复"
+                    .to_string(),
+            );
+        } else if missing > 0 {
+            warnings.push(format!(
+                "{missing} 个条目没取到名称（可能已下架 / 区域不可见），标题先显示为占位符"
+            ));
+        }
     }
 
     /// 单条 appdetails（限流安全：调用方控制节奏）。
@@ -765,18 +791,20 @@ impl SteamClient {
             return;
         }
         let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
-        let capsules = self.store_library_capsules(&appids).await;
+        let catalog = self.store_catalog(&appids).await;
         for item in items.iter_mut() {
-            item.poster_url = capsules.get(&item.external_id).cloned();
+            item.poster_url = catalog
+                .get(&item.external_id)
+                .and_then(|entry| entry.poster_url.clone());
         }
     }
 
-    /// 取一批 appid 的竖版海报 URL（尽力而为：单个分块失败只记日志，返回已取到的部分）。
+    /// 批量取商店目录信息（名称 / 类型 / 竖版海报），尽力而为。
     ///
     /// 先配置国家；整块拿不到的再切 `us` 重试——国区上下文会把成人内容的 assets
     /// 整个隐藏，而不是逐条报错。任意一次请求失败都不能作废已取到的结果。
-    async fn store_library_capsules(&self, appids: &[String]) -> HashMap<String, String> {
-        let mut capsules = HashMap::new();
+    async fn store_catalog(&self, appids: &[String]) -> HashMap<String, StoreCatalogEntry> {
+        let mut catalog = HashMap::new();
         let chunk_count = appids.len().div_ceil(STORE_ITEMS_CHUNK);
         for (index, chunk) in appids.chunks(STORE_ITEMS_CHUNK).enumerate() {
             match self
@@ -785,7 +813,7 @@ impl SteamClient {
             {
                 Ok(primary) => {
                     let missing = fallback_candidates(chunk, &primary, &self.config.country);
-                    capsules.extend(primary);
+                    catalog.extend(primary);
 
                     if !missing.is_empty() {
                         // 回退失败只损失缺的这几条：主国家结果照常保留
@@ -793,14 +821,14 @@ impl SteamClient {
                             .store_items_for_country(&missing, FALLBACK_COUNTRY)
                             .await
                         {
-                            Ok(fallback) => capsules.extend(fallback),
+                            Ok(fallback) => catalog.extend(fallback),
                             Err(err) => {
-                                warn!(error = %err, "竖版海报换区重试失败（保留主国家结果）")
+                                warn!(error = %err, "商店目录换区重试失败（保留主国家结果）")
                             }
                         }
                     }
                 }
-                Err(err) => warn!(error = %err, "竖版海报请求失败（跳过该批）"),
+                Err(err) => warn!(error = %err, "商店目录请求失败（跳过该批）"),
             }
 
             // 与 appdetails 一样按节流间隔排队（只在还有下一块时等待），
@@ -809,14 +837,14 @@ impl SteamClient {
                 tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
             }
         }
-        capsules
+        catalog
     }
 
     async fn store_items_for_country(
         &self,
         appids: &[String],
         country: &str,
-    ) -> Result<HashMap<String, String>> {
+    ) -> Result<HashMap<String, StoreCatalogEntry>> {
         let url = store_items_url(appids, country, &self.config.language);
         let response = self
             .http
@@ -835,7 +863,7 @@ impl SteamClient {
         }
 
         let value: serde_json::Value = response.json().await.net()?;
-        Ok(parse_library_capsules(&value))
+        Ok(parse_store_catalog(&value))
     }
 
     /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
@@ -1052,7 +1080,8 @@ mod tests {
         all.insert("2".to_string(), "y".to_string());
 
         assert!(fallback_candidates(&chunk, &all, "cn").is_empty());
-        assert_eq!(fallback_candidates(&chunk, &HashMap::new(), "cn"), chunk);
+        let empty: HashMap<String, String> = HashMap::new();
+        assert_eq!(fallback_candidates(&chunk, &empty, "cn"), chunk);
     }
 
     /// fixture 缺 `library.json` / `achievements.json` 时必须明确报错，

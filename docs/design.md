@@ -242,14 +242,18 @@ Three paths, chosen automatically:
 |---|---|---|
 | Public `wishlistdata?p=N` JSON | public profile | name, cover, review, release date, added date, wishlist rank |
 | Official `IWishlistService/GetWishlist/v1` | nothing (a key is optional and only sent when configured) | appid, priority, date_added; supports `cursor` paging |
+| Store catalog `IStoreBrowseService/GetItems/v1` | nothing (anonymous, 50 ids per request) | localized **name**, item type, vertical `library_capsule` |
 | Offline fixture (`ACGN_STEAM_FIXTURE`) | nothing | a frozen copy of the public data, used for demos and tests |
 
 - The public path is tried first because it returns richer data (names, covers, review scores).
   Steam has tightened anonymous access to it (as of 2026-10 it answers `302` to the store home
   for everyone), so **the official path is the one that usually delivers** — and it needs neither
   a key nor a cookie.
-- Because the official path only returns appids, the resulting entries show placeholder titles
-  until "enrich" fills in names, covers, prices and descriptions from `appdetails`.
+- Because the official path only returns appids, the wishlist importer immediately batch-fills
+  titles, item types and posters from the store catalog (50 appids per request, with the same
+  `us` retry for region-hidden items). Only appids the catalog does not return (delisted /
+  invisible) keep the `Steam App <id>` placeholder; prices and descriptions still come from
+  enrichment.
 - `appdetails` (store details) is rate limited to roughly **200 requests per 5 minutes**, so
   enrichment defaults to concurrency 1 with a 1500 ms gap (≈0.67 req/s) and stops gracefully on
   HTTP 429 — already-fetched items stay committed and the rest are retried later. A rate limit

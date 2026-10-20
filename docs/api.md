@@ -185,6 +185,10 @@ actually happened — `{ "deleted": 2 }`. Empty `ids` or more than 1000 ids → 
   (richer data) and falls back to the official `IWishlistService` endpoint when Steam refuses
   anonymous access; `summary.source_mode` reports which path was used (`public_json`,
   `official_api` or `fixture`).
+- On the official path the response only carries appids, so the importer batch-fills localized
+  names, item types and vertical posters from `IStoreBrowseService/GetItems` (50 per request)
+  before saving. Only items the catalog cannot resolve (delisted / region-hidden) keep the
+  `Steam App <id>` placeholder; prices and descriptions still need "enrich".
 - `dry_run: true` reports what *would* happen (same numbers as a real run) without writing
   anything; the response then has `"run": null`.
 - `include_non_games` adds bundles / software / demos; those are skipped by default.
