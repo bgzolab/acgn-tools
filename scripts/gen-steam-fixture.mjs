@@ -59,8 +59,58 @@ const OUT_DIR =
     : path.resolve(import.meta.dirname, "..", "fixtures", "steam");
 /** 只用现有 wishlist.json 生成 library.json：不联网，适合日常调整库演示数据 */
 const LIBRARY_ONLY = args.includes("--library-only");
+/** 只写 profile.json：不联网，给账号演示补资料 */
+const PROFILE_ONLY = args.includes("--profile-only");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 演示用账号资料（profile.json）。
+ * 头像用内联 SVG data URI：离线 demo 不联网也能看到头像，浏览器也走同一条 <img> 路径。
+ */
+function buildProfileFile() {
+  const now = Math.floor(Date.now() / 1000);
+  const avatar = `data:image/svg+xml,${encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96">' +
+      '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#1b2838"/><stop offset="1" stop-color="#2a475e"/>' +
+      "</linearGradient></defs>" +
+      '<rect width="96" height="96" rx="10" fill="url(#g)"/>' +
+      '<text x="48" y="62" font-family="system-ui,sans-serif" font-size="40" ' +
+      'text-anchor="middle" fill="#66c0f4">A</text></svg>',
+  )}`;
+
+  return {
+    steam_id: "76561198000000000",
+    fetched_at: new Date().toISOString(),
+    note: "样例数据：账号资料由 scripts/gen-steam-fixture.mjs 生成（演示用，不是真实账号）",
+    player: {
+      steamid: "76561198000000000",
+      personaname: "ACGN Demo",
+      profileurl: "https://steamcommunity.com/profiles/76561198000000000/",
+      avatar,
+      avatarmedium: avatar,
+      avatarfull: avatar,
+      avatarhash: "demo",
+      personastate: 0,
+      communityvisibilitystate: 3,
+      profilestate: 1,
+      timecreated: now - 10 * 365 * 24 * 3600,
+      lastlogoff: now - 24 * 3600,
+      loccountrycode: "CN",
+    },
+  };
+}
+
+async function writeProfileFile() {
+  const profile = buildProfileFile();
+  await writeFile(
+    path.join(OUT_DIR, "profile.json"),
+    `${JSON.stringify(profile, null, 2)}\n`,
+    "utf8",
+  );
+  console.log(`✔ profile.json：${profile.player.personaname}（演示头像）`);
+}
 
 /** 演示用累计时长（分钟）：确定性生成 —— 前几条像在玩，其余多为未玩。 */
 function demoPlaytime(index) {
@@ -139,6 +189,7 @@ async function writeLibraryFile(wishlist) {
     `✔ library.json：${libraryFile.response.game_count} 条（演示时长）；` +
       `achievements.json：${Object.keys(achievementsFile.achievements).length} 条（演示成就）`,
   );
+  await writeProfileFile();
 }
 
 async function getJson(url, attempt = 1) {
@@ -187,6 +238,12 @@ async function appDetails(appid, language) {
 async function main() {
   console.log(`→ 目标目录 ${OUT_DIR}`);
   await mkdir(OUT_DIR, { recursive: true });
+
+  // 不联网：只补账号资料
+  if (PROFILE_ONLY) {
+    await writeProfileFile();
+    return;
+  }
 
   // 不联网：只用现有 wishlist.json 重新生成 library.json
   if (LIBRARY_ONLY) {

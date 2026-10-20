@@ -51,6 +51,7 @@ async fn import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Wishlist,
+        account_id: None,
     })
     .await
     .expect("导入不应失败")
@@ -70,6 +71,7 @@ async fn dry_import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Wishlist,
+        account_id: None,
     })
     .await
     .expect("预览不应失败")
@@ -104,6 +106,7 @@ async fn import_library(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSumma
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Library,
+        account_id: None,
     })
     .await
     .expect("库存导入不应失败")
@@ -123,6 +126,7 @@ async fn dry_import_library(db: &Db, items: &[SourceItem]) -> acgn_core::ImportS
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Library,
+        account_id: None,
     })
     .await
     .expect("库存预览不应失败")
@@ -371,6 +375,7 @@ async fn dry_run_reports_without_writing() {
             source_mode: "test",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            account_id: None,
         })
         .await
         .unwrap();
@@ -531,6 +536,7 @@ async fn filtered_out_items_are_not_reported_as_missing() {
             source_mode: "test",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            account_id: None,
         })
         .await
         .unwrap();
@@ -556,6 +562,7 @@ async fn filtered_out_items_are_not_reported_as_missing() {
             source_mode: "test",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            account_id: None,
         })
         .await
         .unwrap();

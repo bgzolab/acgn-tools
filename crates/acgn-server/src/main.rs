@@ -158,16 +158,37 @@ async fn seed(
         "已抓取愿望单"
     );
 
+    // 账号：demo 也走「输入 ID 自动建号」这条路，前端账号区才有内容
+    let profile = steam.fetch_profile(&fetch.steam_id).await;
+    let (account, created) = db
+        .upsert_account(Source::Steam, &fetch.steam_id, profile.as_ref().ok())
+        .await?;
+    println!(
+        "✔ 账号 #{} {}（{}）",
+        account.id,
+        account.display_label(),
+        if created { "新建" } else { "已存在" }
+    );
+    if let Err(err) = &profile {
+        println!("  ⚠ 账号资料获取失败：{err}");
+    }
+
     let summary = db
         .import_items(&ImportRequest {
             source: Source::Steam,
             mode: "steam_wishlist",
             items: &fetch.items,
             options: ImportOptions::default(),
-            args: None,
+            args: Some(serde_json::json!({
+                "account_id": account.id,
+                "account": account.display_label(),
+                "steam_id": fetch.steam_id,
+                "source_mode": fetch.source_mode,
+            })),
             source_mode: fetch.source_mode,
             extra_warnings: fetch.warnings,
             missing_scope: MissingScope::Wishlist,
+            account_id: Some(account.id),
         })
         .await?;
 

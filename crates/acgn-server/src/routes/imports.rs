@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use acgn_core::{
-    AchievementSyncSummary, Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary,
+    Account, AchievementSyncSummary, Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary,
     RestoreItem, Source, SourceItem,
 };
 use acgn_store::{ImportRequest, MissingScope, RunCounts};
@@ -28,11 +28,100 @@ pub struct ImportResponse {
     pub preview: Vec<GameWithEntry>,
 }
 
+/// 解析本次同步使用的账号。
+///
+/// 两种入口：
+/// * `account_id`：从账号列表里选一个（推荐，前端「重同步」走这条）；
+/// * `steam_id`：直接填 ID / 个性域名 / 主页链接，**自动建号**（兼容旧调用）。
+///
+/// 无论哪条路都会尽力刷新一次账号资料；资料抓取失败只记告警，不阻塞同步。
+struct ResolvedAccount {
+    account: Account,
+    warnings: Vec<String>,
+}
+
+async fn resolve_request_account(
+    state: &AppState,
+    account_id: Option<i64>,
+    steam_id: Option<&str>,
+) -> ApiResult<ResolvedAccount> {
+    if account_id.is_some() && steam_id.is_some_and(|value| !value.trim().is_empty()) {
+        return Err(ApiError(Error::invalid(
+            "account_id 与 steam_id 只能提供一个：选择账号就用 account_id，直接填 ID 才用 steam_id",
+        )));
+    }
+
+    let mut warnings = Vec::new();
+    let (input, existing) = match account_id {
+        Some(account_id) => {
+            let account = state
+                .db
+                .get_account(account_id)
+                .await?
+                .ok_or_else(|| ApiError(Error::not_found(format!("账号 #{account_id}"))))?;
+            if account.source != Source::Steam {
+                return Err(ApiError(Error::invalid(format!(
+                    "账号 #{} 的来源是 {}，暂不支持同步",
+                    account.id,
+                    account.source.label()
+                ))));
+            }
+            (account.external_id.clone(), Some(account))
+        }
+        None => {
+            let input = steam_id
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ApiError(Error::invalid(
+                        "请提供 account_id（选择账号）或 steam_id（直接填写 ID / 个性域名）",
+                    ))
+                })?;
+            (input.to_string(), None)
+        }
+    };
+
+    let resolved = match state.steam.resolve_id(&input).await {
+        Ok((steam_id, _, mut extra)) => {
+            warnings.append(&mut extra);
+            steam_id
+        }
+        Err(err) if existing.is_some() => {
+            // 已有账号的 ID 是解析好的 steamID64，理论上不会失败；失败也不阻塞同步
+            warnings.push(format!("账号 ID 解析失败（{err}），沿用已保存的 ID"));
+            existing
+                .as_ref()
+                .map(|account| account.external_id.clone())
+                .unwrap_or(input)
+        }
+        Err(err) => return Err(ApiError(err)),
+    };
+
+    let profile = match state.steam.fetch_profile(&resolved).await {
+        Ok(profile) => Some(profile),
+        Err(err) => {
+            warnings.push(format!("账号资料刷新失败：{err}"));
+            None
+        }
+    };
+
+    let (account, _) = state
+        .db
+        .upsert_account(Source::Steam, &resolved, profile.as_ref())
+        .await?;
+
+    Ok(ResolvedAccount { account, warnings })
+}
+
 /// POST /api/imports/steam/wishlist
 #[derive(Debug, Deserialize)]
 pub struct SteamWishlistRequest {
-    /// 17 位 steamID64、个性域名或个人主页链接
-    pub steam_id: String,
+    /// 账号 id（从账号列表选择；推荐）
+    #[serde(default)]
+    pub account_id: Option<i64>,
+    /// 兼容入口：17 位 steamID64、个性域名或个人主页链接（会自动建号）
+    #[serde(default)]
+    pub steam_id: Option<String>,
     #[serde(default)]
     pub options: ImportOptions,
     /// 是否返回预览条目（默认 true）
@@ -48,7 +137,13 @@ pub async fn import_steam_wishlist(
     State(state): State<AppState>,
     ValidJson(request): ValidJson<SteamWishlistRequest>,
 ) -> ApiResult<Json<ImportResponse>> {
-    let fetch = state.steam.fetch_wishlist(&request.steam_id).await?;
+    let resolved_account =
+        resolve_request_account(&state, request.account_id, request.steam_id.as_deref()).await?;
+    let account = resolved_account.account;
+
+    let fetch = state.steam.fetch_wishlist(&account.external_id).await?;
+    let mut warnings = resolved_account.warnings;
+    warnings.extend(fetch.warnings);
 
     let summary = state
         .db
@@ -58,21 +153,26 @@ pub async fn import_steam_wishlist(
             items: &fetch.items,
             options: request.options,
             args: Some(json!({
+                "account_id": account.id,
+                "account": account.display_label(),
                 "input": request.steam_id,
                 "steam_id": fetch.steam_id,
                 "source_mode": fetch.source_mode,
                 "resolved_via": fetch.resolved_via,
             })),
             source_mode: fetch.source_mode,
-            extra_warnings: fetch.warnings,
+            extra_warnings: warnings,
             missing_scope: MissingScope::Wishlist,
+            account_id: Some(account.id),
         })
         .await?;
 
     let run = state.db.get_import_run(summary.run_id).await?;
 
     let preview = if request.preview {
-        state.db.load_many(&summary.sample_ids).await?
+        let mut preview = state.db.load_many(&summary.sample_ids).await?;
+        state.db.attach_accounts(&mut preview).await?;
+        preview
     } else {
         Vec::new()
     };
@@ -89,8 +189,12 @@ pub async fn import_steam_wishlist(
 /// 与愿望单不同：官方 `GetOwnedGames` 接口不接受匿名调用，需要 `STEAM_API_KEY`。
 #[derive(Debug, Deserialize)]
 pub struct SteamLibraryRequest {
-    /// 17 位 steamID64、个性域名或个人主页链接
-    pub steam_id: String,
+    /// 账号 id（从账号列表选择；推荐）
+    #[serde(default)]
+    pub account_id: Option<i64>,
+    /// 兼容入口：17 位 steamID64、个性域名或个人主页链接（会自动建号）
+    #[serde(default)]
+    pub steam_id: Option<String>,
     #[serde(default)]
     pub options: ImportOptions,
     /// 是否返回预览条目（默认 true）
@@ -102,7 +206,13 @@ pub async fn import_steam_library(
     State(state): State<AppState>,
     ValidJson(request): ValidJson<SteamLibraryRequest>,
 ) -> ApiResult<Json<ImportResponse>> {
-    let fetch = state.steam.fetch_library(&request.steam_id).await?;
+    let resolved_account =
+        resolve_request_account(&state, request.account_id, request.steam_id.as_deref()).await?;
+    let account = resolved_account.account;
+
+    let fetch = state.steam.fetch_library(&account.external_id).await?;
+    let mut warnings = resolved_account.warnings;
+    warnings.extend(fetch.warnings);
 
     let summary = state
         .db
@@ -112,22 +222,27 @@ pub async fn import_steam_library(
             items: &fetch.items,
             options: request.options,
             args: Some(json!({
+                "account_id": account.id,
+                "account": account.display_label(),
                 "input": request.steam_id,
                 "steam_id": fetch.steam_id,
                 "source_mode": fetch.source_mode,
                 "resolved_via": fetch.resolved_via,
             })),
             source_mode: fetch.source_mode,
-            extra_warnings: fetch.warnings,
-            // 库存导入只对「上次被库存同步见过」的条目负责
+            extra_warnings: warnings,
+            // 库存导入只对「这个账号上次被库存同步见过」的条目负责
             missing_scope: MissingScope::Library,
+            account_id: Some(account.id),
         })
         .await?;
 
     let run = state.db.get_import_run(summary.run_id).await?;
 
     let preview = if request.preview {
-        state.db.load_many(&summary.sample_ids).await?
+        let mut preview = state.db.load_many(&summary.sample_ids).await?;
+        state.db.attach_accounts(&mut preview).await?;
+        preview
     } else {
         Vec::new()
     };
@@ -151,12 +266,16 @@ const MAX_CONSECUTIVE_ACHIEVEMENT_FAILURES: usize = 5;
 
 /// POST /api/imports/steam/achievements —— 检查成就进度（全成就 → 已通关）。
 ///
-/// 与库存导入一样需要 `steam_id`（成就是「某账号的进度」）；
+/// 与库存导入一样需要「某个账号」：`account_id`（推荐）或 `steam_id`（自动建号）。
 /// 逐游戏查询，轮询顺序由 `achievements_checked_at` 决定（最久没查的优先）。
 #[derive(Debug, Deserialize)]
 pub struct SteamAchievementsRequest {
-    /// 17 位 steamID64、个性域名或个人主页链接
-    pub steam_id: String,
+    /// 账号 id（从账号列表选择；推荐）
+    #[serde(default)]
+    pub account_id: Option<i64>,
+    /// 兼容入口：17 位 steamID64、个性域名或个人主页链接
+    #[serde(default)]
+    pub steam_id: Option<String>,
     /// 一次最多检查多少个游戏（默认 200，最大 500）
     #[serde(default)]
     pub limit: Option<i64>,
@@ -169,8 +288,15 @@ pub async fn sync_steam_achievements(
     let started = Instant::now();
     let limit = request.limit.unwrap_or(200).clamp(1, 500);
 
-    let (steam_id, resolved_via, mut warnings) = state.steam.resolve_id(&request.steam_id).await?;
-    let pending = state.db.pending_achievements(Source::Steam, limit).await?;
+    let resolved =
+        resolve_request_account(&state, request.account_id, request.steam_id.as_deref()).await?;
+    let account = resolved.account;
+    let steam_id = account.external_id.clone();
+    let mut base_warnings = resolved.warnings;
+    let pending = state
+        .db
+        .pending_achievements(Source::Steam, Some(account.id), limit)
+        .await?;
 
     if pending.is_empty() {
         return Ok(Json(AchievementSyncSummary {
@@ -183,7 +309,10 @@ pub async fn sync_steam_achievements(
             pending: 0,
             source_mode: state.steam.mode().to_string(),
             duration_ms: started.elapsed().as_millis() as i64,
-            warnings: vec!["没有需要检查成就的条目（先同步库存）".to_string()],
+            warnings: {
+                base_warnings.push("没有需要检查成就的条目（先同步库存）".to_string());
+                base_warnings
+            },
         }));
     }
 
@@ -194,9 +323,10 @@ pub async fn sync_steam_achievements(
             Source::Steam,
             "steam_achievements",
             Some(json!({
+                "account_id": account.id,
+                "account": account.display_label(),
                 "input": request.steam_id,
                 "steam_id": steam_id,
-                "resolved_via": resolved_via,
                 "limit": limit,
             })),
         )
@@ -211,6 +341,7 @@ pub async fn sync_steam_achievements(
     let mut consecutive_failures = 0usize;
     let mut last_error: Option<Error> = None;
     let mut failure_samples: Vec<String> = Vec::new();
+    let mut warnings = base_warnings;
 
     'outer: for chunk in pending.chunks(ACHIEVEMENTS_CONCURRENCY) {
         let futures = chunk.iter().map(|entry| {
@@ -305,7 +436,11 @@ pub async fn sync_steam_achievements(
     let duration_ms = started.elapsed().as_millis() as i64;
 
     // 收尾步骤失败时也不能把运行记录留在 running：尽力补一条失败记录再上抛
-    let pending_after = match state.db.achievements_pending_count(Source::Steam).await {
+    let pending_after = match state
+        .db
+        .achievements_pending_count(Source::Steam, Some(account.id))
+        .await
+    {
         Ok(count) => count,
         Err(err) => {
             finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
@@ -357,6 +492,10 @@ pub async fn sync_steam_achievements(
     {
         finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
         return Err(ApiError(err));
+    }
+
+    if let Err(err) = state.db.touch_account_synced(account.id, Utc::now()).await {
+        warn!(account_id = account.id, error = %err, "刷新账号同步时间失败");
     }
 
     Ok(Json(AchievementSyncSummary {
@@ -443,13 +582,17 @@ pub async fn import_json(
             source_mode: "json",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            // 通用 JSON 导入不建立账号关联：账号来自具体的数据源适配器
+            account_id: None,
         })
         .await?;
 
     let run = state.db.get_import_run(summary.run_id).await?;
 
     let preview = if request.preview {
-        state.db.load_many(&summary.sample_ids).await?
+        let mut preview = state.db.load_many(&summary.sample_ids).await?;
+        state.db.attach_accounts(&mut preview).await?;
+        preview
     } else {
         Vec::new()
     };
@@ -502,7 +645,9 @@ pub async fn restore_json(
     let summary = state.db.restore_items(&items, dry_run).await?;
     let run = state.db.get_import_run(summary.run_id).await?;
     let preview_items = if preview && !dry_run {
-        state.db.load_many(&summary.sample_ids).await?
+        let mut preview = state.db.load_many(&summary.sample_ids).await?;
+        state.db.attach_accounts(&mut preview).await?;
+        preview
     } else {
         Vec::new()
     };

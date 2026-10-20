@@ -9,7 +9,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use acgn_core::{AchievementProgress, Error, Result, SourceItem};
+use acgn_core::{AccountProfile, AchievementProgress, Error, Result, SourceItem};
 use futures::future::join_all;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use tracing::{debug, warn};
@@ -20,6 +20,9 @@ use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
 use crate::library::{OwnedGamesPayload, owned_game_to_source_item};
+use crate::profile::{
+    parse_player_summaries, parse_profile_xml, player_summaries_url, profile_xml_url,
+};
 use crate::util::extract_xml_tag;
 use crate::wishlist::{WishlistPayload, wishlist_to_source_item};
 use crate::{
@@ -240,6 +243,61 @@ impl SteamClient {
                 Ok((id, "vanity", warnings))
             }
         }
+    }
+
+    /// 抓账号资料（昵称 / 头像 / 主页 / 区域 + 原始载荷）。
+    ///
+    /// 三条路径：
+    /// 1. fixture：`profile.json`（缺失时明确报错，调用方当作告警）；
+    /// 2. 配了 API Key：官方 `GetPlayerSummaries`（字段最全，含 `loccountrycode`）；
+    /// 3. 没有 Key：社区资料 XML（只有昵称 / 头像 / 主页，没有区域）。
+    pub async fn fetch_profile(&self, steam_id: &str) -> Result<AccountProfile> {
+        if let Some(fixture) = &self.fixture {
+            return fixture.account_profile();
+        }
+
+        if let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) {
+            let url = player_summaries_url(api_key, steam_id);
+            let response = self
+                .http
+                .get(url)
+                .header(ACCEPT, "application/json")
+                .send()
+                .await
+                .net()?;
+
+            let status = response.status();
+            if !status.is_success() {
+                return Err(http_error_for("GetPlayerSummaries", status));
+            }
+
+            let value: serde_json::Value = response.json().await.net()?;
+            return parse_player_summaries(&value).ok_or_else(|| {
+                Error::rejected(format!(
+                    "Steam 未返回账号 {steam_id} 的资料：请确认 SteamID 正确、资料未隐藏"
+                ))
+            });
+        }
+
+        let url = profile_xml_url(steam_id);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/xml, text/xml")
+            .send()
+            .await
+            .net()?;
+        let status = response.status();
+        let body = response.text().await.net()?;
+
+        // 未登录 / 被限制时社区会返回 HTML 或登录页，必须报「无法读取」而不是造一个空资料
+        if !status.is_success() || !body.contains("<profile") {
+            return Err(Error::rejected(format!(
+                "无法读取社区资料（HTTP {status}）：配置 STEAM_API_KEY 可稳定获取昵称 / 头像 / 区域"
+            )));
+        }
+
+        Ok(parse_profile_xml(&body))
     }
 
     /// 抓取愿望单：公开接口优先，失败且配了 Key 就回退官方接口。
@@ -781,7 +839,31 @@ impl SteamClient {
     }
 
     /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
+    ///
+    /// 使用配置区域（国区不售时回退 `us`），并补竖版海报。
     pub async fn app_details_batch(&self, appids: &[String]) -> Result<AppDetailsBatch> {
+        self.app_details_batch_inner(appids, None, true).await
+    }
+
+    /// 以指定区域抓一批详情（账号区域价格用）。
+    ///
+    /// 刻意**不做** `us` 回退、也不抓海报：账号区域不售时应该记录「该区域没有售价」，
+    /// 拿美元价冒充账号区域价会误导用户。
+    pub async fn app_details_batch_for_country(
+        &self,
+        appids: &[String],
+        country: &str,
+    ) -> Result<AppDetailsBatch> {
+        self.app_details_batch_inner(appids, Some(country), false)
+            .await
+    }
+
+    async fn app_details_batch_inner(
+        &self,
+        appids: &[String],
+        country: Option<&str>,
+        fill_posters: bool,
+    ) -> Result<AppDetailsBatch> {
         if let Some(fixture) = &self.fixture {
             let mut items = Vec::new();
             let mut warnings = Vec::new();
@@ -818,7 +900,12 @@ impl SteamClient {
                 let appid = appid.clone();
                 let client = self;
                 async move {
-                    let result = client.fetch_app_details_live(&appid).await;
+                    let result = match country {
+                        Some(country) => {
+                            client.fetch_app_details_for_country(&appid, country).await
+                        }
+                        None => client.fetch_app_details_live(&appid).await,
+                    };
                     (appid, result)
                 }
             });
@@ -852,7 +939,9 @@ impl SteamClient {
 
         // 竖版海报在新资产接口里（appdetails 只有横版 header）；
         // 旧式 library_600x900 路径对成人 / 区域受限内容已经 404
-        self.fill_poster_assets(&mut items).await;
+        if fill_posters {
+            self.fill_poster_assets(&mut items).await;
+        }
 
         Ok(AppDetailsBatch {
             items,

@@ -27,8 +27,9 @@ use sqlx::{QueryBuilder, Sqlite, SqliteConnection, Transaction};
 use tracing::{info, warn};
 
 use crate::Db;
+use crate::accounts::{aggregate_playtime, load_account_link};
 use crate::error::ResultExt;
-use crate::rows::{GameEntryRow, ImportRunRow, SELECT_GAME_ENTRY, strings_json};
+use crate::rows::{AccountLinkRow, GameEntryRow, ImportRunRow, SELECT_GAME_ENTRY, strings_json};
 
 /// 一次导入请求（由 HTTP 层或 Tauri command 组装）。
 #[derive(Debug, Clone)]
@@ -45,6 +46,9 @@ pub struct ImportRequest<'a> {
     pub extra_warnings: Vec<String>,
     /// `missing` 的统计口径（愿望单导入与库存导入看见的「来源」不同）
     pub missing_scope: MissingScope,
+    /// 本次导入关联的数据源账号（Steam 库存 / 愿望单同步）；`None` = 不建立账号关联
+    /// （通用 JSON 导入、测试等）。
+    pub account_id: Option<i64>,
 }
 
 /// `missing`（来源里消失的条目）的候选口径。
@@ -238,6 +242,13 @@ impl Db {
                 )
                 .await?;
 
+                // 账号的「最近同步」是展示用记账字段：写失败不影响本次导入结果
+                if let Some(account_id) = req.account_id
+                    && let Err(err) = self.touch_account_synced(account_id, Utc::now()).await
+                {
+                    warn!(account_id, error = %err, "刷新账号同步时间失败");
+                }
+
                 info!(
                     run_id,
                     mode = req.mode,
@@ -269,8 +280,31 @@ impl Db {
 
         // 导入前「来源一侧」的条目，用来计算「这次不见了」的 missing。
         // 口径按导入类型区分（见 MissingScope 的说明），不能一套 SQL 用到底。
-        let previous: Vec<(String, i64)> = match req.missing_scope {
-            MissingScope::Wishlist => sqlx::query_as::<_, (String, i64)>(
+        // 带账号的导入按 (账号, 愿望单标记) / (账号, 库存标记) 统计：三个账号各自
+        // 维护自己的 missing，A 号退款不会把 B 号还在库里的条目报成 missing。
+        let previous: Vec<(String, i64)> = match (req.missing_scope, req.account_id) {
+            (MissingScope::Wishlist, Some(account_id)) => sqlx::query_as::<_, (String, i64)>(
+                "SELECT g.external_id, g.id FROM games g
+                 JOIN game_accounts ga ON ga.game_id = g.id
+                 WHERE g.source = ? AND ga.account_id = ? AND ga.in_wishlist = 1",
+            )
+            .bind(req.source.as_str())
+            .bind(account_id)
+            .fetch_all(&self.pool)
+            .await
+            .db()?,
+            (MissingScope::Library, Some(account_id)) => sqlx::query_as::<_, (String, i64)>(
+                "SELECT g.external_id, g.id FROM games g
+                 JOIN game_accounts ga ON ga.game_id = g.id
+                 WHERE g.source = ? AND ga.account_id = ?
+                   AND ga.source_playtime_minutes IS NOT NULL",
+            )
+            .bind(req.source.as_str())
+            .bind(account_id)
+            .fetch_all(&self.pool)
+            .await
+            .db()?,
+            (MissingScope::Wishlist, None) => sqlx::query_as::<_, (String, i64)>(
                 "SELECT g.external_id, g.id FROM games g
                  JOIN library_entries e ON e.game_id = g.id
                  WHERE g.source = ? AND e.status = 'wishlist'",
@@ -280,7 +314,7 @@ impl Db {
             .await
             .db()?,
             // 被库存同步见过的标记：source_playtime_minutes 非空（0 也算见过）
-            MissingScope::Library => sqlx::query_as::<_, (String, i64)>(
+            (MissingScope::Library, None) => sqlx::query_as::<_, (String, i64)>(
                 "SELECT g.external_id, g.id FROM games g
                  JOIN library_entries e ON e.game_id = g.id
                  WHERE g.source = ? AND e.source_playtime_minutes IS NOT NULL",
@@ -317,6 +351,9 @@ impl Db {
         if req.options.dry_run {
             // 预览与真实导入共用同一套差异计算：报「会更新 N 条」就真的是 N 条，
             // 而不是「来源里有 + 本地已存在」这种口径不一致的估算。
+            // 内存库只有一条连接：预览不开事务，但复用同一条连接做账号聚合。
+            let mut conn = self.pool.acquire().await.db()?;
+            let conn = &mut *conn;
             for item in req.items {
                 // 先记下「来源里确实还有它」——被 include_dlc 之类的过滤跳过的条目
                 // 仍然存在于来源中，不能算进 missing。
@@ -325,10 +362,17 @@ impl Db {
                     summary.skipped += 1;
                     continue;
                 }
-                match load_row(&self.pool, item.source, &item.external_id).await? {
+                match load_row(&mut *conn, item.source, &item.external_id).await? {
                     Some(row) => {
-                        let plan = plan_merge(&row, item, now)?;
-                        if plan.changed() {
+                        let (account_changed, playtime) = match req.account_id {
+                            Some(account_id) => {
+                                plan_account_link(conn, row.id, account_id, item, req.missing_scope)
+                                    .await?
+                            }
+                            None => (false, item.playtime_minutes),
+                        };
+                        let plan = plan_merge(&row, item, playtime, now)?;
+                        if plan.changed() || account_changed {
                             summary.updated += 1;
                         } else {
                             summary.unchanged += 1;
@@ -351,7 +395,7 @@ impl Db {
                 continue;
             }
 
-            match upsert_item(&mut tx, item, now).await? {
+            match upsert_item(&mut tx, item, req.account_id, req.missing_scope, now).await? {
                 MetadataOutcome::Added(id) => {
                     summary.added += 1;
                     push_sample(&mut summary.sample_ids, id);
@@ -821,14 +865,16 @@ fn push_sample(sample_ids: &mut Vec<i64>, id: i64) {
     }
 }
 
-/// 新条目落库。
+/// 新条目落库（`account_id` 非空时同时建立账号关联）。
 async fn upsert_item(
     tx: &mut Transaction<'_, Sqlite>,
     item: &SourceItem,
+    account_id: Option<i64>,
+    scope: MissingScope,
     now: DateTime<Utc>,
 ) -> Result<MetadataOutcome> {
     if let Some(row) = load_in_tx(tx, item.source, &item.external_id).await? {
-        return merge_existing(tx, row, item, now).await;
+        return merge_existing(tx, row, item, account_id, scope, now).await;
     }
 
     if let Some(game_id) = game_id_in_tx(tx, item.source, &item.external_id).await? {
@@ -836,13 +882,16 @@ async fn upsert_item(
         let row = load_in_tx(tx, item.source, &item.external_id)
             .await?
             .ok_or_else(|| Error::storage("关系行修复失败"))?;
-        return merge_existing(tx, row, item, now).await;
+        return merge_existing(tx, row, item, account_id, scope, now).await;
     }
 
     let game = game_from_item(item, now, false);
     let game_id = insert_game_in_tx(tx, &game, metadata_to_text(item), now).await?;
     let entry = new_entry(game_id, item, now);
     insert_entry_in_tx(tx, &entry).await?;
+    if let Some(account_id) = account_id {
+        upsert_account_link(tx, game_id, account_id, item, scope, now).await?;
+    }
 
     Ok(MetadataOutcome::Added(game_id))
 }
@@ -866,10 +915,21 @@ impl MergePlan {
 }
 
 /// 把来源条目合并到已有行上（纯计算）。
-fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Result<MergePlan> {
+///
+/// `playtime_minutes` 是本次要写入「来源跟踪值」的时长：
+/// * 不关联账号时 = 条目自己的 `playtime_minutes`（历史行为）；
+/// * 关联账号时 = 该游戏所有账号时长的聚合（`MAX`，见 [`aggregate_playtime`]）——
+///   这样小号（0 小时）后同步也不会把主号的时长覆盖掉。
+fn plan_merge(
+    row: &GameEntryRow,
+    item: &SourceItem,
+    playtime_minutes: Option<i64>,
+    now: DateTime<Utc>,
+) -> Result<MergePlan> {
     let GameWithEntry {
         mut game,
         mut entry,
+        ..
     } = row.clone().into_domain()?;
 
     let metadata_changed = merge_metadata(&mut game, item);
@@ -912,7 +972,9 @@ fn plan_merge(row: &GameEntryRow, item: &SourceItem, now: DateTime<Utc>) -> Resu
     // * `playtime_minutes`（展示 / 统计用）在「本地没手改过」时跟随来源——为空，
     //   或仍等于上次来源值；一旦两者不同（用户手填 / 其它平台时长）就保留本地，
     //   直到用户清空或用「采用 Steam 时长」恢复跟随。
-    if let Some(playtime) = item.playtime_minutes {
+    //
+    // 多账号时这里拿到的是聚合值（MAX）：只有聚合值变化才算变化。
+    if let Some(playtime) = playtime_minutes {
         let previous_source = entry.source_playtime_minutes;
         if previous_source != Some(playtime) {
             entry.source_playtime_minutes = Some(playtime);
@@ -992,9 +1054,21 @@ async fn merge_existing(
     tx: &mut Transaction<'_, Sqlite>,
     row: GameEntryRow,
     item: &SourceItem,
+    account_id: Option<i64>,
+    scope: MissingScope,
     now: DateTime<Utc>,
 ) -> Result<MetadataOutcome> {
-    let plan = plan_merge(&row, item, now)?;
+    // 账号关联先落库，再按聚合值规划条目：真实导入与 dry_run 都走同一套聚合口径。
+    let (account_changed, playtime) = match account_id {
+        Some(account_id) => {
+            let changed = upsert_account_link(tx, row.id, account_id, item, scope, now).await?;
+            let aggregate = aggregate_playtime(&mut *tx, row.id, None).await?;
+            (changed, aggregate)
+        }
+        None => (false, item.playtime_minutes),
+    };
+
+    let plan = plan_merge(&row, item, playtime, now)?;
 
     if plan.metadata_changed {
         update_game_in_tx(tx, &plan.game, now).await?;
@@ -1015,10 +1089,161 @@ async fn merge_existing(
             .db()?;
     }
 
-    if plan.changed() {
+    if plan.changed() || account_changed {
         Ok(MetadataOutcome::Updated(plan.game.id))
     } else {
         Ok(MetadataOutcome::Unchanged(plan.game.id))
+    }
+}
+
+/// 账号关联的「计划值」：导入只覆盖来源真的给了值的字段。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PlannedLink {
+    in_wishlist: bool,
+    source_playtime_minutes: Option<i64>,
+    playtime_2weeks_minutes: Option<i64>,
+    last_played_at: Option<DateTime<Utc>>,
+}
+
+/// 愿望单导入把 `in_wishlist` 置 1；库存导入置 0（Steam 买到手后会移出愿望单）。
+/// 其它导入类型（理论上不会带账号）保持原值。
+fn planned_link(
+    existing: Option<&AccountLinkRow>,
+    item: &SourceItem,
+    scope: MissingScope,
+) -> PlannedLink {
+    let previous = existing.cloned().unwrap_or(AccountLinkRow {
+        in_wishlist: false,
+        source_playtime_minutes: None,
+        playtime_2weeks_minutes: None,
+        last_played_at: None,
+    });
+
+    PlannedLink {
+        in_wishlist: match scope {
+            MissingScope::Wishlist => true,
+            MissingScope::Library => false,
+        },
+        source_playtime_minutes: item.playtime_minutes.or(previous.source_playtime_minutes),
+        playtime_2weeks_minutes: item
+            .playtime_2weeks_minutes
+            .or(previous.playtime_2weeks_minutes),
+        last_played_at: item.last_played_at.or(previous.last_played_at),
+    }
+}
+
+/// 预览用：算出「关联是否有变化」以及聚合后的来源时长，不落库。
+async fn plan_account_link(
+    conn: &mut SqliteConnection,
+    game_id: i64,
+    account_id: i64,
+    item: &SourceItem,
+    scope: MissingScope,
+) -> Result<(bool, Option<i64>)> {
+    let existing = load_account_link(conn, game_id, account_id).await?;
+    let planned = planned_link(existing.as_ref(), item, scope);
+    let changed = match existing.as_ref() {
+        Some(previous) => {
+            planned.in_wishlist != previous.in_wishlist
+                || planned.source_playtime_minutes != previous.source_playtime_minutes
+                || planned.playtime_2weeks_minutes != previous.playtime_2weeks_minutes
+                || !same_instant(planned.last_played_at, previous.last_played_at)
+        }
+        None => true,
+    };
+
+    // 与真实路径一致：库存导入用「其它账号的最大值 + 本次值」，愿望单导入只读聚合。
+    let aggregate = match item.playtime_minutes {
+        Some(playtime) => {
+            let others = aggregate_playtime(conn, game_id, Some(account_id)).await?;
+            max_playtime(others, Some(playtime))
+        }
+        None => aggregate_playtime(conn, game_id, None).await?,
+    };
+
+    Ok((changed, aggregate))
+}
+
+/// 写入账号关联：`last_synced_at` 每次都推进（记账），`updated_at` 只在内容真的变化时推进。
+async fn upsert_account_link(
+    tx: &mut Transaction<'_, Sqlite>,
+    game_id: i64,
+    account_id: i64,
+    item: &SourceItem,
+    scope: MissingScope,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let existing = load_account_link(&mut *tx, game_id, account_id).await?;
+    let planned = planned_link(existing.as_ref(), item, scope);
+
+    match existing {
+        None => {
+            sqlx::query(
+                "INSERT INTO game_accounts (
+                    game_id, account_id, in_wishlist, source_playtime_minutes,
+                    playtime_2weeks_minutes, last_played_at, last_synced_at, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(game_id)
+            .bind(account_id)
+            .bind(planned.in_wishlist)
+            .bind(planned.source_playtime_minutes)
+            .bind(planned.playtime_2weeks_minutes)
+            .bind(planned.last_played_at)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .execute(&mut **tx)
+            .await
+            .db()?;
+            Ok(true)
+        }
+        Some(previous) => {
+            let changed = planned.in_wishlist != previous.in_wishlist
+                || planned.source_playtime_minutes != previous.source_playtime_minutes
+                || planned.playtime_2weeks_minutes != previous.playtime_2weeks_minutes
+                || !same_instant(planned.last_played_at, previous.last_played_at);
+
+            if changed {
+                sqlx::query(
+                    "UPDATE game_accounts SET
+                        in_wishlist = ?, source_playtime_minutes = ?, playtime_2weeks_minutes = ?,
+                        last_played_at = ?, last_synced_at = ?, updated_at = ?
+                     WHERE game_id = ? AND account_id = ?",
+                )
+                .bind(planned.in_wishlist)
+                .bind(planned.source_playtime_minutes)
+                .bind(planned.playtime_2weeks_minutes)
+                .bind(planned.last_played_at)
+                .bind(now)
+                .bind(now)
+                .bind(game_id)
+                .bind(account_id)
+                .execute(&mut **tx)
+                .await
+                .db()?;
+            } else {
+                sqlx::query(
+                    "UPDATE game_accounts SET last_synced_at = ?
+                     WHERE game_id = ? AND account_id = ?",
+                )
+                .bind(now)
+                .bind(game_id)
+                .bind(account_id)
+                .execute(&mut **tx)
+                .await
+                .db()?;
+            }
+            Ok(changed)
+        }
+    }
+}
+
+/// 两个可选时长取较大者（忽略 `None`）。
+fn max_playtime(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (left, right) => left.or(right),
     }
 }
 
