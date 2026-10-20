@@ -7,6 +7,7 @@ import {
   STATUS_LABELS,
   STATUS_ORDER,
   type EntryPatch,
+  type GameAccount,
   type GameWithEntry,
   type Status,
 } from "../api/types";import {
@@ -23,6 +24,7 @@ import {
   sourceLabel,
 } from "../composables/format";
 import { errorText, pushToast } from "../composables/toast";
+import AccountAvatar from "./AccountAvatar.vue";
 
 const props = defineProps<{ gameId: number | null }>();
 const emit = defineEmits<{ close: []; updated: [item: GameWithEntry]; deleted: [id: number] }>();
@@ -61,6 +63,32 @@ const sourcePlaytimeLabel = computed(() =>
     ? formatMinutes(sourcePlaytime.value)
     : "尚未游玩",
 );
+
+const linkedAccounts = computed(() => item.value?.accounts ?? []);
+
+/** 账号自己的时长：0 分钟 = 已拥有但没玩过，与「没有数据」区分开 */
+function accountPlaytimeLabel(account: GameAccount): string {
+  if (!account.owned) return "—";
+  return account.source_playtime_minutes && account.source_playtime_minutes > 0
+    ? formatMinutes(account.source_playtime_minutes)
+    : "尚未游玩";
+}
+
+/**
+ * 账号区域价格：
+ * `price_updated_at` 非空 = 这个区域已经问过 Steam；此时没有价格就是该区域没有售价，
+ * 而不是「还没抓过」（后者展示「待补全」，与全局价格的补全状态一致）。
+ */
+function accountPriceLabel(account: GameAccount): string {
+  if (!account.price_updated_at) return "待补全";
+  if (account.is_free) return "免费";
+  if (account.price_final === null && account.price_initial === null) return "该区域无售价";
+  const current = formatPrice(account.price_final ?? account.price_initial, account.price_currency);
+  if ((account.discount_percent ?? 0) > 0 && account.price_initial !== null) {
+    return `${current}（原价 ${formatPrice(account.price_initial, account.price_currency)}）`;
+  }
+  return current;
+}
 
 /** 有效时长上限：100 年（分钟）。超过它不是手滑就是数据错误，也避免超出 i64 触发英文 serde 400 */
 const MAX_PLAYTIME_MINUTES = 100 * 365 * 24 * 60;
@@ -217,7 +245,7 @@ async function doRefresh() {
     const result = await refreshMetadata(targetId);
     // 同样的慢响应守卫：切走了就不要把结果盖回去
     if (props.gameId !== targetId) return;
-    item.value = { game: result.game, entry: result.entry };
+    item.value = { game: result.game, entry: result.entry, accounts: result.accounts };
     emit("updated", item.value);
     pushToast("ok", "元数据已更新", `来源结果：${result.outcome}`);
   } catch (error) {
@@ -358,6 +386,42 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           </div>
           <div v-else-if="sourcePlaytime !== null" class="hint" style="margin-top: 4px">
             当前跟随 Steam 时长（{{ sourcePlaytimeLabel }}）
+          </div>
+        </div>
+
+        <!-- 账号：一个游戏可能同时在多个账号的库存 / 愿望单里 -->
+        <div v-if="linkedAccounts.length" class="field">
+          <span class="label">关联账号</span>
+          <div class="account-links">
+            <div
+              v-for="account in linkedAccounts"
+              :key="account.account_id"
+              class="account-link"
+            >
+              <AccountAvatar
+                :src="account.avatar_url"
+                :name="account.display_name?.trim() || account.external_id"
+                :size="30"
+              />
+              <div class="account-link-main">
+                <div class="row tight">
+                  <strong>{{ account.display_name?.trim() || account.external_id }}</strong>
+                  <span v-if="account.country" class="badge">{{ account.country.toUpperCase() }}</span>
+                  <span v-if="account.owned" class="badge ok">库存</span>
+                  <span v-if="account.in_wishlist" class="badge">愿望单</span>
+                </div>
+                <div class="hint">
+                  时长 {{ accountPlaytimeLabel(account) }}
+                  <template v-if="account.playtime_2weeks_minutes">
+                    · 近两周 {{ formatMinutes(account.playtime_2weeks_minutes) }}
+                  </template>
+                  <template v-if="account.last_played_at">
+                    · 最后游玩 {{ relativeTime(account.last_played_at) }}
+                  </template>
+                </div>
+              </div>
+              <span class="price">{{ accountPriceLabel(account) }}</span>
+            </div>
           </div>
         </div>
 

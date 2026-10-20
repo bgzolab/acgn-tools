@@ -5,15 +5,18 @@ import { useRoute, useRouter } from "vue-router";
 
 import { deleteGames, enrich } from "../api";
 import type { Status } from "../api/types";
+import AccountAvatar from "../components/AccountAvatar.vue";
 import GameCard from "../components/GameCard.vue";
 import GameDetailDrawer from "../components/GameDetailDrawer.vue";
 import Pagination from "../components/Pagination.vue";
 import { errorText, pushToast } from "../composables/toast";
+import { useAccountsStore } from "../stores/accounts";
 import { SORT_OPTIONS, useLibraryStore } from "../stores/library";
 import { useMetaStore } from "../stores/meta";
 
 const store = useLibraryStore();
 const meta = useMetaStore();
+const accounts = useAccountsStore();
 const route = useRoute();
 const router = useRouter();
 
@@ -89,7 +92,7 @@ async function onDeleted() {
 
 // 筛选变化后旧的选择不再可见：清空并解除武装，避免「确认删除 N 条」还亮着时误删看不见的条目
 watch(
-  () => [store.filters.status, store.filters.q, store.filters.sort, store.filters.favorite],
+  () => [store.filters.status, store.filters.q, store.filters.sort, store.filters.favorite, store.filters.account_id],
   () => {
     selectedIds.value = new Set();
     deleteArmed.value = false;
@@ -150,9 +153,15 @@ async function runEnrich() {
 
 onMounted(async () => {
   await meta.load();
+  await accounts.load();
+  // 账号被删除后旧筛选会指向不存在的账号：回退到「全部」
+  if (store.filters.account_id !== null && !accounts.byId(store.filters.account_id)) {
+    store.setAccount(null);
+  } else {
+    void store.load();
+  }
   const focus = Number(route.query.focus);
   if (Number.isFinite(focus) && focus > 0) openId.value = focus;
-  void store.load();
 });
 </script>
 
@@ -209,6 +218,31 @@ onMounted(async () => {
     </button>
   </div>
 
+  <div v-if="accounts.items.length" class="row tight" style="margin-bottom: 16px">
+    <span class="hint">账号</span>
+    <button
+      class="chip"
+      :class="{ active: store.filters.account_id === null }"
+      @click="store.setAccount(null)"
+    >
+      全部
+    </button>
+    <button
+      v-for="account in accounts.items"
+      :key="account.id"
+      class="chip chip-account"
+      :class="{ active: store.filters.account_id === account.id }"
+      @click="store.setAccount(account.id)"
+    >
+      <AccountAvatar
+        :src="account.avatar_url"
+        :name="account.display_name?.trim() || account.external_id"
+        :size="16"
+      />
+      {{ accounts.label(account) }}
+    </button>
+  </div>
+
   <div v-if="managing" class="banner" style="margin-bottom: 14px">
     <span>🧹</span>
     <div class="row tight" style="flex: 1">
@@ -248,6 +282,7 @@ onMounted(async () => {
       v-for="item in store.items"
       :key="item.game.id"
       :item="item"
+      :account-id="store.filters.account_id"
       :selectable="managing"
       :selected="selectedIds.has(item.game.id)"
       @open="openDetail"
@@ -257,7 +292,7 @@ onMounted(async () => {
   </div>
 
   <div v-else-if="!store.loading" class="empty">
-    <template v-if="store.filters.q || store.filters.status || store.filters.favorite">
+    <template v-if="store.filters.q || store.filters.status || store.filters.favorite || store.filters.account_id">
       没有符合条件的条目，试试清空筛选
     </template>
     <template v-else> 游戏库还是空的，去 <RouterLink to="/import">导入 Steam 愿望单</RouterLink> </template>

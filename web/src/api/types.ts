@@ -107,6 +107,61 @@ export interface LibraryEntry {
 export interface GameWithEntry {
   game: Game;
   entry: LibraryEntry;
+  /** 关联的数据源账号（库存 / 愿望单）；没有关联时字段缺省 */
+  accounts?: GameAccount[];
+}
+
+/** 数据源账号（SteamID64）。不是本项目的多用户账号。 */
+export interface Account {
+  id: number;
+  source: Source;
+  external_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  profile_url: string | null;
+  /** 资料里的区域（Steam loccountrycode） */
+  country_code: string | null;
+  /** 手动覆盖的价格区域；空 = 跟随资料 */
+  country_override: string | null;
+  /** 实际取价区域（override ?? 资料区域） */
+  effective_country: string | null;
+  /** 来源原始资料（GetPlayerSummaries 的 player 对象） */
+  metadata: Record<string, unknown> | null;
+  metadata_updated_at: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountSummary extends Account {
+  /** 该账号库存条目数（含 0 分钟） */
+  owned_count: number;
+  /** 该账号愿望单条目数 */
+  wishlist_count: number;
+}
+
+/** 游戏 ↔ 账号关联（随 GameWithEntry 返回）。 */
+export interface GameAccount {
+  account_id: number;
+  source: Source;
+  external_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  /** 该账号的实际取价区域 */
+  country: string | null;
+  in_wishlist: boolean;
+  owned: boolean;
+  source_playtime_minutes: number | null;
+  playtime_2weeks_minutes: number | null;
+  last_played_at: string | null;
+  price_currency: string | null;
+  price_initial: number | null;
+  price_final: number | null;
+  discount_percent: number | null;
+  is_free: boolean | null;
+  /** 非空 = 该账号区域已经抓过价（无价即「该区域没有售价」） */
+  price_updated_at: string | null;
+  last_synced_at: string | null;
 }
 
 export interface Page<T> {
@@ -196,6 +251,8 @@ export interface EnrichSummary {
   succeeded: number;
   failed: number;
   skipped: number;
+  /** 本轮写入的账号区域价格条数 */
+  account_prices: number;
   warnings: string[];
   source_mode: string;
   duration_ms: number;
@@ -250,6 +307,8 @@ export interface EntryPatch {
 export interface GameListParams {
   status?: Status | "";
   source?: Source;
+  /** 只看某个账号关联的条目（库存 + 愿望单） */
+  account_id?: number;
   q?: string;
   sort?: string;
   favorite?: boolean;
