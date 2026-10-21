@@ -205,8 +205,12 @@ async function saveNoteAndPlaytime() {
   const raw = playtimeMinutes.value.trim();
 
   if (raw === "") {
-    // 留空 = 清空本地手填值；有 Steam 记录时后端会恢复为来源值
-    if (item.value.entry.playtime_minutes !== null) patchBody.playtime_minutes = -1;
+    // 留空 = 清空本地手填值；只有「本地值确实不同于来源跟踪值」才提交 -1。
+    // 跟随来源的 0 分钟（拥有但没玩过）回显为空，不应触发无变化的 PATCH。
+    const current = item.value.entry.playtime_minutes;
+    if (current !== null && current !== item.value.entry.source_playtime_minutes) {
+      patchBody.playtime_minutes = -1;
+    }
   } else {
     // 必须是纯数字：parseInt("750abc") 会静默截断成 750，与用户输入不符
     if (!/^\d+$/.test(raw)) {

@@ -25,6 +25,7 @@ import { ApiError } from "../api/http";
 import AccountAvatar from "../components/AccountAvatar.vue";
 import GameCard from "../components/GameCard.vue";
 import { formatDate, formatDateTime, relativeTime } from "../composables/format";
+import { readEnrichLimit, writeEnrichLimit } from "../composables/preferences";
 import { errorText, pushToast } from "../composables/toast";
 import { useAccountsStore } from "../stores/accounts";
 import { useMetaStore } from "../stores/meta";
@@ -583,14 +584,16 @@ async function runJsonImport() {
 }
 
 // ---------------------------------------------------------------- 元数据补全
-const enrichLimit = ref(20);
+const enrichLimit = ref(readEnrichLimit());
 const enriching = ref(false);
 const enrichResult = ref<EnrichSummary | null>(null);
 
 async function runEnrich() {
   enriching.value = true;
   try {
-    enrichResult.value = await enrich(positiveIntOr(enrichLimit.value, 20, 200));
+    const limit = writeEnrichLimit(positiveIntOr(enrichLimit.value, 20, 200));
+    enrichLimit.value = limit;
+    enrichResult.value = await enrich(limit);
     const summary = enrichResult.value;
     pushToast(
       summary.succeeded > 0 || summary.account_prices > 0 ? "ok" : "warn",

@@ -7,6 +7,7 @@ import { enrich, getStats } from "../api";
 import type { EnrichSummary, Stats } from "../api/types";
 import GameCard from "../components/GameCard.vue";
 import StatusBadge from "../components/StatusBadge.vue";
+import { readEnrichLimit } from "../composables/preferences";
 import { errorText, pushToast } from "../composables/toast";
 import {
   formatDateTime,
@@ -23,6 +24,8 @@ const loading = ref(false);
 const enriching = ref(false);
 const error = ref("");
 const meta = useMetaStore();
+/** 与导入页共用「每次补全多少条」的设置 */
+const enrichLimit = readEnrichLimit();
 
 const statusCount = (status: string) =>
   stats.value?.by_status.find((row) => row.status === status)?.count ?? 0;
@@ -86,8 +89,8 @@ onMounted(() => {
       </p>
     </div>
     <div class="row">
-      <button class="btn" :disabled="enriching" @click="runEnrich(20)">
-        {{ enriching ? "补全中…" : "补全 20 条元数据" }}
+      <button class="btn" :disabled="enriching" @click="runEnrich(enrichLimit)">
+        {{ enriching ? "补全中…" : `补全 ${enrichLimit} 条元数据` }}
       </button>
       <button class="btn ghost" :disabled="loading" @click="load">刷新</button>
     </div>

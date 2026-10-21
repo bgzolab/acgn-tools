@@ -9,6 +9,7 @@ import AccountAvatar from "../components/AccountAvatar.vue";
 import GameCard from "../components/GameCard.vue";
 import GameDetailDrawer from "../components/GameDetailDrawer.vue";
 import Pagination from "../components/Pagination.vue";
+import { readEnrichLimit } from "../composables/preferences";
 import { errorText, pushToast } from "../composables/toast";
 import { useAccountsStore } from "../stores/accounts";
 import { SORT_OPTIONS, useLibraryStore } from "../stores/library";
@@ -21,6 +22,8 @@ const route = useRoute();
 const router = useRouter();
 
 const searchDraft = ref(store.filters.q);
+/** 与导入页共用「每次补全多少条」的设置 */
+const enrichLimit = readEnrichLimit();
 const openId = ref<number | null>(null);
 const enriching = ref(false);
 
@@ -136,7 +139,7 @@ function closeDetail() {
 async function runEnrich() {
   enriching.value = true;
   try {
-    const result = await enrich(20);
+    const result = await enrich(enrichLimit);
     pushToast(
       result.succeeded > 0 || result.account_prices > 0 ? "ok" : "warn",
       "元数据补全完成",
@@ -192,8 +195,13 @@ onMounted(async () => {
           {{ option.label }}
         </option>
       </select>
-      <button class="btn" :disabled="enriching" @click="runEnrich">
-        {{ enriching ? "补全中…" : "补全元数据" }}
+      <button
+        class="btn"
+        :disabled="enriching"
+        title="每次补全的条数在「导入与同步」页调整"
+        @click="runEnrich"
+      >
+        {{ enriching ? "补全中…" : `补全元数据（${enrichLimit} 条）` }}
       </button>
       <button class="btn" :class="{ primary: managing }" @click="toggleManaging">
         {{ managing ? "退出管理" : "管理" }}
