@@ -84,7 +84,7 @@ node scripts/gen-steam-fixture.mjs
 | Personal state (status, rating, note, progress, favorite) | **Local** — an import must never overwrite it |
 | Playtime | **Source-tracked, locally overridable** — imports record `source_playtime_minutes` and `playtime_minutes` follows it until the user edits it (design.md §4.5) |
 | Account association (`game_accounts`: owned / wishlist, per-account playtime) | **Source** — an item belongs to the account the sync ran for |
-| Items that disappeared from the source | **Reported only** (`missing`), never deleted; scoped per account |
+| Items that disappeared from the source | **Reported only** (`missing`), never deleted; scoped per account and repeated while it stays gone |
 | Re-importing identical data | Must be a no-op (`unchanged`), imports are idempotent |
 
 `SourceItem.status` is adopted while the local entry is still `wishlist` or `backlog` (the

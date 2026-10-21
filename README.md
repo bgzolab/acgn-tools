@@ -67,8 +67,9 @@ library, enrich it with store metadata, and keep track of what you actually play
 - Prices are kept **per account region**: when an account's effective region (`country_override`
   ?? profile `loccountrycode`) differs from `STEAM_COUNTRY`, enrichment also fetches that
   region's price and the card / detail drawer show the selected account's regional price.
-- Items that disappear from a source are only reported (`missing`), never deleted;
-  re-importing unchanged data reports `unchanged` and writes nothing.
+- Items that disappear from a source are only reported (`missing`), never deleted; the report
+  repeats on later syncs while the item stays gone. Re-importing unchanged data reports
+  `unchanged` and writes nothing.
 
 ## Quick start
 

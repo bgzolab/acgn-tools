@@ -197,8 +197,9 @@ stored once per `(source, external_id)` and every Steam import runs **for one ac
   `last_played_at` for library imports. A library hit clears `in_wishlist` for that account
   (Steam removes owned games from the wishlist); other accounts' rows are untouched.
 - `missing` is computed against the **same account's** previous associations (§4), never the
-  whole database. Items keep their rows when they disappear — the next sync reports them again
-  until the source returns or the user deletes them.
+  whole database. Items keep their rows when they disappear, and the membership marker is not
+  cleared: the same item is reported again on later syncs while it stays gone (the pre-account
+  behavior extended per account). Deleting the row or its return resets the report.
 - The entry-level `source_playtime_minutes` is the `MAX` across that game's accounts. It is
   updated before `plan_merge`, so dry-run and real imports report the same diff.
 - Associating an existing game for a new account counts as `updated`; re-importing the exact

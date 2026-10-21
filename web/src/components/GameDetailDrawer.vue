@@ -198,7 +198,10 @@ function setProgress(value: number) {
 async function saveNoteAndPlaytime() {
   if (!item.value) return;
 
-  const patchBody: EntryPatch = { note: noteDraft.value };
+  // 只提交真的变化了的字段：避免「点保存但没改」也刷新 updated_at
+  const patchBody: EntryPatch = {};
+  const noteChanged = noteDraft.value !== (item.value.entry.note ?? "");
+  if (noteChanged) patchBody.note = noteDraft.value;
   const raw = playtimeMinutes.value.trim();
 
   if (raw === "") {
@@ -219,6 +222,11 @@ async function saveNoteAndPlaytime() {
     if (minutes !== (item.value.entry.playtime_minutes ?? -1)) {
       patchBody.playtime_minutes = minutes;
     }
+  }
+
+  if (Object.keys(patchBody).length === 0) {
+    pushToast("info", "没有需要保存的修改", "备注与时长都没有变化");
+    return;
   }
 
   const saved = await patch(patchBody);

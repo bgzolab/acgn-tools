@@ -347,6 +347,13 @@ async fn enrich_fills_prices_for_the_account_region() {
         "应按账号区域写入一条价格：{body}"
     );
 
+    // 合并 run 的计数必须同时包含元数据段和价格段（与纯价格 run 口径一致）
+    let (status, runs) = send(&app, get("/api/imports?limit=1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(runs[0]["seen"], 2, "1 个元数据条目 + 1 个价格目标");
+    assert_eq!(runs[0]["updated"], 2, "元数据更新 + 价格写入");
+    assert_eq!(runs[0]["missing"], 0);
+
     let (status, body) = send(&app, get(&format!("/api/games?account_id={}", account.id))).await;
     assert_eq!(status, StatusCode::OK);
     let link = &body["items"][0]["accounts"][0];
