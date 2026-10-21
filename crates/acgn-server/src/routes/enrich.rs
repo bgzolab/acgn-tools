@@ -85,7 +85,8 @@ pub async fn enrich(
                 .finish_run_ok(
                     run_id,
                     RunCounts {
-                        seen: pass.attempted,
+                        // seen = 队列里的全部目标：written + missing 与它对齐
+                        seen: pass.pending,
                         added: 0,
                         updated: pass.written,
                         unchanged: 0,
@@ -164,22 +165,23 @@ pub async fn enrich(
         }
     }
 
-    let failed = appids.len() as i64 - items.len() as i64;
-    if failed > 0 {
+    let metadata_failed = appids.len() as i64 - items.len() as i64;
+    if metadata_failed > 0 {
         warnings.push(format!(
-            "{failed} 个条目没取到详情（限流或已下架），可以稍后再次点「补全」"
+            "{metadata_failed} 个条目没取到详情（限流或已下架），可以稍后再次点「补全」"
         ));
     }
 
     // 元数据被限流时别再接着打价格接口：一样会被拒绝
     let rate_limited = matches!(last_error, Some(Error::SourceRejected(_)));
-    let account_prices = if rate_limited {
+    let (account_prices, price_pending, price_failed) = if rate_limited {
         warnings.push("已触发 Steam 限流：账号区域价格下次补全时继续".to_string());
-        0
+        (0, 0, 0)
     } else {
         let pass = fill_account_prices(&state, limit).await?;
         warnings.extend(pass.warnings);
-        pass.written
+        let price_failed = pass.pending - pass.written;
+        (pass.written, pass.pending, price_failed)
     };
 
     let duration_ms = started.elapsed().as_millis() as i64;
@@ -201,12 +203,14 @@ pub async fn enrich(
         .finish_run_ok(
             run_id,
             RunCounts {
-                seen: appids.len() as i64,
+                // 两段都计入：seen = 元数据条目 + 价格目标，
+                // updated 含区域价格写入，missing 含两段的抓取失败。
+                seen: appids.len() as i64 + price_pending,
                 added: 0,
-                updated,
+                updated: updated + account_prices,
                 unchanged: succeeded - updated,
                 skipped: 0,
-                missing: failed,
+                missing: metadata_failed + price_failed,
             },
             &warnings,
             duration_ms,
@@ -216,7 +220,7 @@ pub async fn enrich(
     Ok(Json(EnrichSummary {
         requested: appids.len() as i64,
         succeeded,
-        failed,
+        failed: metadata_failed + price_failed,
         skipped: 0,
         account_prices,
         warnings,

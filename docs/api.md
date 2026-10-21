@@ -336,7 +336,8 @@ Two passes, both throttled by the same configuration (`STEAM_ENRICH_CONCURRENCY`
 The response reports `account_prices` (association rows resolved, including "no listing in this
 region") next to the metadata counts. Batches that answer normally but lack an appid mark that
 association as checked so the pass converges; request-level failures stay pending for the next
-call. Successful runs are recorded in the run history as
+call. Run history counts both passes: `seen`/`updated`/`missing` include the region-price
+targets, so a run that only wrote prices no longer shows `updated: 0`. Successful runs are recorded in the run history as
 `metadata_enrich`. A rate limit during the metadata pass fails with 422 and leaves already-fetched
 items committed; a rate limit during the price pass only stops that pass and is reported in
 `warnings`.

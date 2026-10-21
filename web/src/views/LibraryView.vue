@@ -153,7 +153,7 @@ async function runEnrich() {
 
 onMounted(async () => {
   await meta.load();
-  // 强制刷新：导入页刚删掉账号时，30 秒缓存内的旧列表会让筛选器指向不存在的账号
+  // 每次都重新拉取：保证删除/新增账号后，筛选器校验基于最新列表
   await accounts.load();
   // 账号被删除后旧筛选会指向不存在的账号：回退到「全部」
   if (store.filters.account_id !== null && !accounts.byId(store.filters.account_id)) {
