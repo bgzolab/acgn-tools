@@ -896,10 +896,24 @@ impl SteamClient {
         fill_posters: bool,
     ) -> Result<AppDetailsBatch> {
         if let Some(fixture) = &self.fixture {
+            // fixture 的 appdetails 只按生成时的区域抓取：换区账号不能拿它冒充区域价格
+            if let Some(requested) = country
+                && let Some(fixture_country) = fixture.store_country.as_deref()
+                && !requested.eq_ignore_ascii_case(fixture_country)
+            {
+                return Ok(AppDetailsBatch {
+                    items: Vec::new(),
+                    warnings: vec![format!(
+                        "fixture 的商店详情按 {fixture_country} 区域生成，没有 {requested} 区域的价格：本次按「该区域无售价」处理"
+                    )],
+                    last_error: None,
+                });
+            }
+
             let mut items = Vec::new();
             let mut warnings = Vec::new();
             for appid in appids {
-                match fixture.app_details(appid) {
+                match fixture.app_details_for_country(appid, country) {
                     Some(response) if response.success => match &response.data {
                         Some(data) => items.push(data.to_source_item(appid)),
                         None => warnings.push(format!("{appid}: fixture 里 data 为空")),

@@ -82,6 +82,8 @@ function buildProfileFile() {
 
   return {
     steam_id: "76561198000000000",
+    // appdetails.json 是按这个区域（cc=cn）抓的：其它区域不能拿它冒充区域价格
+    country: "cn",
     fetched_at: new Date().toISOString(),
     note: "样例数据：账号资料由 scripts/gen-steam-fixture.mjs 生成（演示用，不是真实账号）",
     player: {

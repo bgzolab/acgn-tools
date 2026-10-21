@@ -238,9 +238,10 @@ Steam prices depend on the store region. Each account has an effective region
 - The same appdetails rate limit applies; a 429 stops the pass gracefully and leaves un-fetched
   associations pending for the next click. The run only counts associations that actually
   entered the loop, so a country cut short by a rate limit is not misreported as processed.
-- In fixture mode `appdetails.json` is keyed by appid only, so the regional price pass ignores
-  the requested country and stores the fixture price for every account; only the live path is
-  region-aware (the offline demo is for wiring, not price accuracy).
+- In fixture mode `appdetails.json` is generated for one store region (`profile.json` carries
+  `"country": "cn"`). A price request for a different account region is treated as "no listing
+  in this region" (with a warning) instead of storing the fixture price under the wrong
+  currency; only the live path is region-aware.
 
 ## 5. Data sources (Steam today)
 

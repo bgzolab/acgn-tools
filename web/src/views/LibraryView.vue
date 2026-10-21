@@ -138,9 +138,9 @@ async function runEnrich() {
   try {
     const result = await enrich(20);
     pushToast(
-      result.succeeded > 0 ? "ok" : "warn",
+      result.succeeded > 0 || result.account_prices > 0 ? "ok" : "warn",
       "元数据补全完成",
-      `成功 ${result.succeeded} / 失败 ${result.failed}`,
+      `详情 ${result.succeeded}/${result.requested} · 账号区域价格 ${result.account_prices} 条 · 失败 ${result.failed}`,
     );
     store.refresh();
   } catch (error) {

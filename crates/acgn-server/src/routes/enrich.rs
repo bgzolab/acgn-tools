@@ -92,7 +92,8 @@ pub async fn enrich(
                         skipped: 0,
                         // 与元数据补全一致：没写成功的条目按「抓取失败」记，
                         // 不要把失败混进 unchanged（unchanged = 抓到了但没有差异）。
-                        missing: pass.attempted - pass.written,
+                        // pending 含被限流中断、没进入循环的目标，和 API 的 failed 对齐。
+                        missing: pass.pending - pass.written,
                     },
                     &pass.warnings,
                     duration_ms,
@@ -129,7 +130,7 @@ pub async fn enrich(
         return Ok(Json(EnrichSummary {
             requested: 0,
             succeeded: 0,
-            failed: 0,
+            failed: pass.pending - pass.written,
             skipped: 0,
             account_prices: pass.written,
             warnings: pass.warnings,
@@ -226,10 +227,11 @@ pub async fn enrich(
 
 /// 第二段的结果。
 struct PricePass {
-    /// 本轮实际处理的关联行数（同一国家 / 游戏会合并请求；被限流中断、
-    /// 没进入循环的后续国家不计入）
+    /// 本轮排队的目标关联行数（`pending_account_prices` 返回的数量）
+    pending: i64,
+    /// 实际进入循环处理的关联行数（被限流中断、没进入循环的后续国家不计入）
     attempted: i64,
-    /// 成功写入价格的关联行数
+    /// 成功写入价格 / 确认无售价的关联行数
     written: i64,
     warnings: Vec<String>,
 }
@@ -245,12 +247,14 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
         .await?;
     if targets.is_empty() {
         return Ok(PricePass {
+            pending: 0,
             attempted: 0,
             written: 0,
             warnings: Vec::new(),
         });
     }
 
+    let pending = targets.len() as i64;
     let mut grouped: BTreeMap<String, Vec<AccountPriceTarget>> = BTreeMap::new();
     for target in targets {
         grouped
@@ -353,6 +357,7 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
     }
 
     Ok(PricePass {
+        pending,
         attempted,
         written,
         warnings,

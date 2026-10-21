@@ -1,6 +1,7 @@
 {
   "steam_id": "76561198000000000",
-  "fetched_at": "2026-10-20T12:34:15.755Z",
+  "country": "cn",
+  "fetched_at": "2026-10-21T15:35:53.694Z",
   "note": "样例数据：账号资料由 scripts/gen-steam-fixture.mjs 生成（演示用，不是真实账号）",
   "player": {
     "steamid": "76561198000000000",
@@ -13,8 +14,8 @@
     "personastate": 0,
     "communityvisibilitystate": 3,
     "profilestate": 1,
-    "timecreated": 1477139655,
-    "lastlogoff": 1792413255,
+    "timecreated": 1477236953,
+    "lastlogoff": 1792510553,
     "loccountrycode": "CN"
   }
 }
