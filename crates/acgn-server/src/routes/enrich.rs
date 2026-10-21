@@ -200,7 +200,8 @@ pub async fn enrich(
 
 /// 第二段的结果。
 struct PricePass {
-    /// 本轮排队处理的关联行数（同一国家 / 游戏会合并请求，但行数按关联算）
+    /// 本轮实际处理的关联行数（同一国家 / 游戏会合并请求；被限流中断、
+    /// 没进入循环的后续国家不计入）
     attempted: i64,
     /// 成功写入价格的关联行数
     written: i64,
@@ -224,7 +225,6 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
         });
     }
 
-    let attempted = targets.len() as i64;
     let mut grouped: BTreeMap<String, Vec<AccountPriceTarget>> = BTreeMap::new();
     for target in targets {
         grouped
@@ -233,6 +233,7 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
             .push(target);
     }
 
+    let mut attempted = 0i64;
     let mut written = 0i64;
     let mut warnings = Vec::new();
 
@@ -258,14 +259,17 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
             warnings: batch_warnings,
             last_error,
         } = batch;
-        let mut by_appid: HashMap<String, SourceItem> = items
+        let by_appid: HashMap<String, SourceItem> = items
             .into_iter()
             .map(|item| (item.external_id.clone(), item))
             .collect();
 
         let mut missing = Vec::new();
         for target in targets {
-            let Some(item) = by_appid.remove(&target.external_id) else {
+            attempted += 1;
+            // 用 get 而不是 remove：同一区域的两个账号可以拥有同一个游戏，
+            // 它们共享这一次 appdetails 响应，不能把详情消费掉。
+            let Some(item) = by_appid.get(&target.external_id) else {
                 missing.push(target);
                 continue;
             };

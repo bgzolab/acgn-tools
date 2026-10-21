@@ -452,3 +452,59 @@ async fn dry_run_does_not_create_an_account() {
     let (_, accounts) = send(&app, get("/api/accounts")).await;
     assert_eq!(accounts.as_array().unwrap().len(), 1);
 }
+
+/// P1 回归：同区域两个账号拥有同一个游戏时共享一次 appdetails 请求，
+/// 两个关联都必须拿到真实价格，不能把第二个误标成「该区域无售价」。
+#[tokio::test]
+async fn enrich_shares_one_fetch_between_two_accounts_in_the_same_region() {
+    let (app, db) = test_app("enrich-shared").await;
+    let (a, _) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000004",
+            Some(&AccountProfile {
+                display_name: Some("A".to_string()),
+                country_code: Some("us".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let (b, _) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000005",
+            Some(&AccountProfile {
+                display_name: Some("B".to_string()),
+                country_code: Some("us".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    seed_library(&db, a.id, "300", "Regional", 10).await;
+    seed_library(&db, b.id, "300", "Regional", 20).await;
+
+    let (status, body) = send(
+        &app,
+        json_request("POST", "/api/enrich", &json!({ "limit": 20 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["account_prices"], 2, "同区两个账号都应被处理：{body}");
+
+    let (status, page) = send(&app, get(&format!("/api/games?account_id={}", a.id))).await;
+    assert_eq!(status, StatusCode::OK);
+    let links = page["items"][0]["accounts"]
+        .as_array()
+        .expect("应返回两条账号关联");
+    assert_eq!(links.len(), 2);
+    for link in links {
+        assert_eq!(link["price_currency"], "USD", "{link}");
+        assert_eq!(
+            link["price_final"], 1499,
+            "同区共享一次请求，两个账号都要拿到真实价格：{link}"
+        );
+        assert!(link["price_updated_at"].is_string(), "{link}");
+    }
+}
