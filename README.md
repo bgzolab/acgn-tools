@@ -25,6 +25,9 @@ library, enrich it with store metadata, and keep track of what you actually play
   remembered with its persona name, avatar, profile link and region; later syncs pick the account
   from a list instead of retyping the ID. Games are linked to the account that owns / wishes for
   them, the library filters by account, and prices are stored per account region
+- **One-click sync** — wishlist → library → achievements run in sequence for the selected
+  account, with step-by-step progress, automatic achievement batching and a retry on transient
+  network errors; a failure in one step does not abort the others
 - **Achievement check** — per-game achievement progress; a game with all achievements is
   marked *completed* automatically, while a status you set yourself is never reverted
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,

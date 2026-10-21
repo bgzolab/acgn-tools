@@ -254,6 +254,8 @@ Three paths, chosen automatically:
   `us` retry for region-hidden items). Only appids the catalog does not return (delisted /
   invisible) keep the `Steam App <id>` placeholder; prices and descriptions still come from
   enrichment.
+- Wishlist pagination is paced at 250 ms per page (and the one-click sync runs the steps
+  serially), so a large wishlist cannot hammer the source in one burst.
 - `appdetails` (store details) is rate limited to roughly **200 requests per 5 minutes**, so
   enrichment defaults to concurrency 1 with a 1500 ms gap (≈0.67 req/s) and stops gracefully on
   HTTP 429 — already-fetched items stay committed and the rest are retried later. A rate limit
@@ -360,10 +362,13 @@ Accounts are created on demand: `POST /api/accounts/resolve` (and any sync that 
   `types.ts` (mirrors the Rust DTOs) and `index.ts` (typed endpoint functions).
 - Pinia stores: `library` (list state, filters, in-place updates), `accounts` (account list used
   by the import page and the library filter) and `meta` (backend config, status enum).
-- The import page is account-first: add an account once, then select a card and sync wishlist /
-  library / achievements. The library filters by account and cards show the selected account's
-  regional price plus account avatars; the detail drawer lists every linked account with its own
-  playtime and price.
+- The import page is account-first: add an account once, then select a card and use the single
+  **one-click sync** button. It runs wishlist → library → achievements serially and shows a step
+  list + progress bar (achievements continue in 200-game batches until no never-checked entries
+  remain; network/upstream errors retry once; a failed step does not abort the rest). "Preview"
+  dry-runs the two imports without checking achievements.
+- The library filters by account and cards show the selected account's regional price plus
+  account avatars; the detail drawer lists every linked account with its own playtime and price.
 - Images come from Steam's CDN; a failed load falls back to a generated placeholder with the
   title, because the CDN is not reachable from every network. Account avatars fall back to a
   monogram on load failure (the fixture uses an inline SVG avatar, so the offline demo works).

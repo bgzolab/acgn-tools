@@ -16,11 +16,12 @@ import {
 } from "../api";
 import type {
   AccountSummary,
-  AchievementSyncSummary,
   EnrichSummary,
+  GameWithEntry,
   ImportResponse,
   ImportRun,
 } from "../api/types";
+import { ApiError } from "../api/http";
 import AccountAvatar from "../components/AccountAvatar.vue";
 import GameCard from "../components/GameCard.vue";
 import { formatDate, formatDateTime, relativeTime } from "../composables/format";
@@ -177,13 +178,42 @@ async function removeAccount(id: number) {
   }
 }
 
-// ---------------------------------------------------------------- Steam（愿望单 + 库存）
+// ---------------------------------------------------------------- 一键同步
 const includeDlc = ref(true);
 const includeNonGames = ref(false);
-const running = ref<{ kind: "wishlist" | "library"; dry: boolean } | null>(null);
+
+type SyncStepKey = "wishlist" | "library" | "achievements";
+type SyncStepStatus = "pending" | "running" | "ok" | "failed" | "skipped";
+
+interface SyncStep {
+  key: SyncStepKey;
+  label: string;
+  status: SyncStepStatus;
+  detail: string;
+  error: string;
+  warnings: string[];
+}
+
+const SYNC_STEP_DEFS: { key: SyncStepKey; label: string }[] = [
+  { key: "wishlist", label: "愿望单" },
+  { key: "library", label: "库存" },
+  { key: "achievements", label: "成就" },
+];
+
+/** 成就每批多少个：后端上限 500；200 约 25 秒一批，进度不会长时间不动 */
+const ACHIEVEMENT_BATCH = 200;
+/** 一次同步最多自动续跑多少批（防止异常情况下无限请求） */
+const MAX_ACHIEVEMENT_ROUNDS = 10;
+
+const syncing = ref(false);
+const syncSteps = ref<SyncStep[]>([]);
+const syncPreview = ref<GameWithEntry[]>([]);
+const syncSourceMode = ref("");
+const syncAccountLabel = ref("");
+const achievementDone = ref(0);
+const achievementTotal = ref(0);
+
 const result = ref<ImportResponse | null>(null);
-/** 本次操作针对的账号名（预览时 run 为 null，用它展示） */
-const lastRunAccount = ref("");
 
 /** 结果来自哪种导入：徽章按 mode 映射（JSON 导入 / 备份还原不能标成「愿望单」） */
 const IMPORT_MODE_LABELS: Record<string, string> = {
@@ -204,96 +234,269 @@ const resultIsLibrary = computed(() => result.value?.summary.mode === "steam_lib
 /** 本次结果对应的账号名（预览时 run 为 null） */
 const resultAccountLabel = computed(() => {
   const fromRun = result.value?.run?.args?.account;
-  if (typeof fromRun === "string" && fromRun) return fromRun;
-  return lastRunAccount.value;
+  return typeof fromRun === "string" && fromRun ? fromRun : "";
 });
 
-/** 库存导入需要 API Key；fixture 离线模式不受此限制 */
+/** 库存导入 / 成就检查需要 API Key；fixture 离线模式不受此限制 */
 const libraryReady = computed(() => {
   const steam = meta.config?.steam;
   if (!steam) return false;
   return steam.mode === "fixture" || steam.has_api_key;
 });
 
-function isRunning(kind: "wishlist" | "library", dry: boolean): boolean {
-  return running.value?.kind === kind && running.value.dry === dry;
+const syncFinished = computed(
+  () =>
+    syncSteps.value.filter(
+      (step) => step.status === "ok" || step.status === "failed" || step.status === "skipped",
+    ).length,
+);
+const syncFailed = computed(() => syncSteps.value.filter((step) => step.status === "failed").length);
+const syncStateLabel = computed(() => {
+  if (!syncSteps.value.length) return "";
+  if (syncing.value) return "进行中";
+  return syncFailed.value > 0 ? "部分失败" : "已完成";
+});
+const syncStateClass = computed(() => {
+  if (syncing.value) return "warn";
+  return syncFailed.value > 0 ? "danger" : "ok";
+});
+const syncPercent = computed(() => {
+  const steps = syncSteps.value;
+  if (!steps.length) return 0;
+  let progress = 0;
+  for (const step of steps) {
+    if (step.status !== "pending" && step.status !== "running") {
+      progress += 1;
+    } else if (
+      step.status === "running" &&
+      step.key === "achievements" &&
+      achievementTotal.value > 0
+    ) {
+      progress += Math.min(1, achievementDone.value / achievementTotal.value);
+    } else if (step.status === "running") {
+      // 愿望单 / 库存是单次请求，没有更细的进度：给一点“已开始”的视觉反馈
+      progress += 0.2;
+    }
+  }
+  return Math.min(100, Math.round((progress / steps.length) * 100));
+});
+
+function stepIcon(step: SyncStep): string {
+  switch (step.status) {
+    case "ok":
+      return "✓";
+    case "running":
+      return "⟳";
+    case "failed":
+      return "✕";
+    case "skipped":
+      return "–";
+    default:
+      return "·";
+  }
 }
 
-async function runSteam(kind: "wishlist" | "library", dryRun: boolean) {
+function summaryLine(summary: ImportResponse["summary"]): string {
+  const missing = summary.missing ? ` · 消失 ${summary.missing}` : "";
+  return `新增 ${summary.added} · 更新 ${summary.updated} · 未变 ${summary.unchanged} · 跳过 ${summary.skipped}${missing} · ${summary.duration_ms}ms`;
+}
+
+function addPreview(target: Map<number, GameWithEntry>, items: GameWithEntry[]) {
+  for (const item of items) {
+    if (!target.has(item.game.id)) target.set(item.game.id, item);
+  }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+/** 网络 / 上游抖动自动重试一次；隐私、限流、参数错误直接抛出（重试没有意义）。 */
+async function withRetry<T>(label: string, op: () => Promise<T>): Promise<T> {
+  try {
+    return await op();
+  } catch (error) {
+    const kind = error instanceof ApiError ? error.kind : "";
+    if (kind !== "network" && kind !== "upstream" && kind !== "offline") throw error;
+    const { message } = errorText(error);
+    pushToast("warn", `${label}失败，1.5 秒后自动重试一次`, message);
+    await sleep(1500);
+    return await op();
+  }
+}
+
+function markStep(key: SyncStepKey, patch: Partial<SyncStep>) {
+  const step = syncSteps.value.find((item) => item.key === key);
+  if (step) Object.assign(step, patch);
+}
+
+/** 成就检查：按批自动续跑，直到没有「从未检查过」的条目（有上限）。 */
+async function runAchievementsStep(account: AccountSummary) {
+  achievementDone.value = 0;
+  achievementTotal.value = 0;
+  markStep("achievements", { detail: `检查中… 每批 ${ACHIEVEMENT_BATCH} 个` });
+  let promoted = 0;
+  let rounds = 0;
+  let pending = Number.POSITIVE_INFINITY;
+  let previousPending = Number.POSITIVE_INFINITY;
+  const warnings = new Set<string>();
+
+  while (rounds < MAX_ACHIEVEMENT_ROUNDS) {
+    rounds += 1;
+    const summary = await withRetry("成就同步", () =>
+      syncSteamAchievements({ account_id: account.id, limit: ACHIEVEMENT_BATCH }),
+    );
+    for (const warning of summary.warnings) warnings.add(warning);
+    promoted += summary.promoted;
+
+    if (achievementTotal.value === 0) {
+      achievementTotal.value = summary.checked + summary.unavailable + summary.pending;
+    }
+    previousPending = pending;
+    pending = summary.pending;
+    achievementDone.value = Math.max(0, achievementTotal.value - pending);
+
+    if (achievementTotal.value > 0) {
+      markStep("achievements", {
+        detail: `已检查 ${achievementDone.value} / ${achievementTotal.value} · 全成就升级 ${promoted}`,
+      });
+    }
+
+    if (pending === 0) break;
+    if (pending >= previousPending) {
+      warnings.add(`成就检查没有进展（还剩 ${pending} 个），稍后再试`);
+      break;
+    }
+    // 批与批之间留一点间隔，进一步降低触发限流的概率
+    await sleep(300);
+  }
+
+  if (achievementTotal.value === 0) {
+    markStep("achievements", {
+      detail: "没有需要检查的条目",
+      warnings: [...warnings].slice(0, 4),
+    });
+    return;
+  }
+
+  const detail =
+    `已检查 ${achievementDone.value} / ${achievementTotal.value} · 全成就升级 ${promoted}` +
+    (pending > 0 ? ` · 还剩 ${pending} 个` : "");
+  markStep("achievements", { detail, warnings: [...warnings].slice(0, 4) });
+}
+
+/**
+ * 一键同步：愿望单 → 库存 → 成就，串行执行，逐步更新进度。
+ *
+ * - `dryRun` 只预览愿望单 / 库存，不检查成就、不写库；
+ * - 单个步骤失败不会中断后续步骤（例如愿望单私密但库存公开）；
+ * - 网络 / 上游抖动由 `withRetry` 自动重试一次；成就按批续跑，每批之间留间隔。
+ */
+async function runSync(dryRun = false) {
+  if (!meta.config) await meta.load();
   const account = selectedAccount.value;
   if (!account) {
     pushToast("warn", "请先选择账号", "在上方添加账号，或点选要同步的账号卡片");
     return;
   }
+  if (syncing.value) return;
 
-  running.value = { kind, dry: dryRun };
-  lastRunAccount.value = accounts.label(account);
-  const label = kind === "wishlist" ? "愿望单" : "库存";
+  syncing.value = true;
+  syncPreview.value = [];
+  syncSourceMode.value = "";
+  syncAccountLabel.value = accounts.label(account);
+  syncSteps.value = SYNC_STEP_DEFS.map((def) => ({
+    ...def,
+    status: "pending",
+    detail: "等待",
+    error: "",
+    warnings: [],
+  }));
+  result.value = null;
+  const previews = new Map<number, GameWithEntry>();
+
   try {
-    // 库存接口一次返回全库 + 时长，没有 DLC / 非游戏过滤；选项只传 dry_run
-    const options =
-      kind === "wishlist"
-        ? {
-            include_dlc: includeDlc.value,
-            include_non_games: includeNonGames.value,
-            dry_run: dryRun,
-          }
-        : { dry_run: dryRun };
-    const body = { account_id: account.id, preview: !dryRun, options };
-    const response =
-      kind === "wishlist" ? await importSteamWishlist(body) : await importSteamLibrary(body);
-    result.value = response;
-    const summary = response.summary;
+    for (const step of syncSteps.value) {
+      if (step.key === "achievements" && dryRun) {
+        step.status = "skipped";
+        step.detail = "仅预览不检查成就";
+        continue;
+      }
+      if (step.key !== "wishlist" && !libraryReady.value) {
+        step.status = "skipped";
+        step.detail = "未配置 STEAM_API_KEY";
+        continue;
+      }
+
+      step.status = "running";
+      step.detail = "进行中…";
+      try {
+        if (step.key === "wishlist") {
+          const response = await withRetry("愿望单同步", () =>
+            importSteamWishlist({
+              account_id: account.id,
+              preview: true,
+              options: {
+                include_dlc: includeDlc.value,
+                include_non_games: includeNonGames.value,
+                dry_run: dryRun,
+              },
+            }),
+          );
+          Object.assign(step, {
+            status: "ok",
+            detail: summaryLine(response.summary),
+            warnings: response.summary.warnings.slice(0, 4),
+          });
+          addPreview(previews, response.preview);
+          syncSourceMode.value = response.summary.source_mode;
+        } else if (step.key === "library") {
+          const response = await withRetry("库存同步", () =>
+            importSteamLibrary({
+              account_id: account.id,
+              preview: true,
+              options: { dry_run: dryRun },
+            }),
+          );
+          Object.assign(step, {
+            status: "ok",
+            detail: summaryLine(response.summary),
+            warnings: response.summary.warnings.slice(0, 4),
+          });
+          addPreview(previews, response.preview);
+          if (response.summary.source_mode) syncSourceMode.value = response.summary.source_mode;
+        } else {
+          await runAchievementsStep(account);
+        }
+      } catch (error) {
+        const { message } = errorText(error);
+        step.status = "failed";
+        step.detail = "失败";
+        step.error = message;
+      }
+    }
+  } finally {
+    syncPreview.value = [...previews.values()].slice(0, 24);
+    syncing.value = false;
+  }
+
+  // 条目数 / 最近同步时间 / 运行历史在整轮结束后统一刷新（dry-run 没有可刷新的）
+  if (!dryRun) {
+    await Promise.all([loadHistory(), accounts.load(true)]);
+  }
+
+  const failed = syncSteps.value.filter((step) => step.status === "failed");
+  if (failed.length) {
+    pushToast(
+      "warn",
+      "同步完成（部分失败）",
+      `${failed.map((step) => step.label).join(" / ")} 失败，可再点一次重试（导入是幂等的）`,
+    );
+  } else {
+    const completed = syncSteps.value.filter((step) => step.status === "ok").length;
     pushToast(
       dryRun ? "warn" : "ok",
-      `${accounts.label(account)} · ${label}${dryRun ? "预览完成（未写入）" : "导入完成"}`,
-      `数据源 ${summary.source_mode} · 新增 ${summary.added} / 更新 ${summary.updated} / 未变 ${summary.unchanged} / 跳过 ${summary.skipped} · ${summary.duration_ms}ms`,
+      dryRun ? "预览完成（未写入）" : "一键同步完成",
+      `已完成 ${completed} 个步骤${dryRun ? "，成就未检查" : ""}`,
     );
-    if (!dryRun) {
-      // 条目数 / 最近同步时间会变；顺便让库页的账号筛选用到新数据
-      await Promise.all([loadHistory(), accounts.load(true)]);
-    }
-  } catch (error) {
-    const { title, message } = errorText(error);
-    pushToast("err", title, message);
-  } finally {
-    running.value = null;
-  }
-}
-
-// ---------------------------------------------------------------- 成就同步
-const achievementLimit = ref(200);
-const achievementRunning = ref(false);
-const achievementResult = ref<AchievementSyncSummary | null>(null);
-
-async function runAchievements() {
-  const account = selectedAccount.value;
-  if (!account) {
-    pushToast("warn", "请先选择账号", "成就是「某个账号的进度」，先在账号卡片里选一个");
-    return;
-  }
-
-  achievementRunning.value = true;
-  try {
-    const summary = await syncSteamAchievements({
-      account_id: account.id,
-      // 输入框清空时不能发空字符串：后端 Option<i64> 会报英文 serde 400
-      limit: positiveIntOr(achievementLimit.value, 200, 500),
-    });
-    achievementResult.value = summary;
-    pushToast(
-      summary.promoted > 0 ? "ok" : "warn",
-      summary.promoted > 0 ? "成就检查完成" : "成就检查完成（没有新全成就）",
-      `检查 ${summary.checked} · 更新 ${summary.updated}（含全成就升级 ${summary.promoted}）` +
-        ` · 未变 ${summary.unchanged} · 该账号没有 ${summary.unavailable} · 失败 ${summary.failed}` +
-        (summary.pending > 0 ? ` · 还剩 ${summary.pending} 个` : ""),
-    );
-    await Promise.all([loadHistory(), accounts.load(true)]);
-  } catch (error) {
-    const { title, message } = errorText(error);
-    pushToast("err", title, message);
-  } finally {
-    achievementRunning.value = false;
   }
 }
 
@@ -571,13 +774,17 @@ onMounted(() => {
           <template v-else>先在上方选择一个账号</template>
         </div>
       </div>
-      <span class="badge">source_mode: {{ result?.summary.source_mode ?? "—" }}</span>
+      <span class="badge">source_mode: {{ syncSourceMode || "—" }}</span>
     </div>
 
     <div class="grid cols-2">
       <div>
         <div class="field">
-          <span class="label">愿望单</span>
+          <span class="label">一键同步（愿望单 → 库存 → 成就）</span>
+          <div class="hint" style="margin-bottom: 8px">
+            串行执行、按账号分别统计；成就每批 {{ ACHIEVEMENT_BATCH }} 个自动续跑，网络抖动自动重试一次。
+            库存与成就需要「游戏详情」公开 + 后端配置 STEAM_API_KEY。
+          </div>
           <div class="row tight" style="margin-bottom: 8px">
             <label class="switch">
               <input v-model="includeDlc" type="checkbox" />
@@ -591,89 +798,18 @@ onMounted(() => {
           <div class="row">
             <button
               class="btn primary"
-              :disabled="running !== null || !selectedAccount"
-              @click="runSteam('wishlist', false)"
+              :disabled="syncing || !selectedAccount"
+              @click="runSync(false)"
             >
-              {{ isRunning("wishlist", false) ? "导入中…" : "导入愿望单" }}
+              {{ syncing ? "同步中…" : "一键同步" }}
             </button>
-            <button
-              class="btn"
-              :disabled="running !== null || !selectedAccount"
-              @click="runSteam('wishlist', true)"
-            >
-              {{ isRunning("wishlist", true) ? "预览中…" : "仅预览" }}
-            </button>
-          </div>
-        </div>
-
-        <div class="divider" />
-
-        <div class="field">
-          <span class="label">库存（含游玩时长）</span>
-          <div class="hint" style="margin-bottom: 8px">
-            需要「游戏详情」公开 + 后端配置 STEAM_API_KEY；有游玩时长的条目算「在玩」，
-            没玩过的算「待玩」，Steam 时长在你没有手填过时自动跟随
-          </div>
-          <div class="row">
-            <button
-              class="btn primary"
-              :disabled="running !== null || !libraryReady || !selectedAccount"
-              @click="runSteam('library', false)"
-            >
-              {{ isRunning("library", false) ? "同步中…" : "同步库存" }}
-            </button>
-            <button
-              class="btn"
-              :disabled="running !== null || !libraryReady || !selectedAccount"
-              @click="runSteam('library', true)"
-            >
-              {{ isRunning("library", true) ? "预览中…" : "仅预览" }}
+            <button class="btn" :disabled="syncing || !selectedAccount" @click="runSync(true)">
+              仅预览（不写入）
             </button>
           </div>
           <div v-if="!libraryReady" class="hint" style="margin-top: 6px">
-            ⚠ 未检测到 STEAM_API_KEY：愿望单导入不受影响；库存接口不接受匿名调用
+            ⚠ 未检测到 STEAM_API_KEY：库存与成就会跳过，愿望单仍可导入
           </div>
-        </div>
-
-        <div class="divider" />
-
-        <div class="field">
-          <span class="label">成就检查（全成就 → 已通关）</span>
-          <div class="hint" style="margin-bottom: 8px">
-            逐游戏检查成就进度（约 8 个/秒）；全成就的条目会标记为「已通关」，
-            你手动标过的状态不会被回退。进度是「某个账号的」，按选中的账号检查
-          </div>
-          <div class="row">
-            <input
-              v-model.number="achievementLimit"
-              class="input"
-              style="width: 90px"
-              type="number"
-              min="1"
-              max="500"
-            />
-            <span class="hint">个 / 次</span>
-            <button
-              class="btn"
-              :disabled="achievementRunning || !libraryReady || !selectedAccount"
-              @click="runAchievements"
-            >
-              {{ achievementRunning ? "检查中…" : "同步成就" }}
-            </button>
-          </div>
-          <div v-if="achievementResult" class="hint" style="margin-top: 6px">
-            检查 {{ achievementResult.checked }} · 更新 {{ achievementResult.updated }}（含全成就升级
-            {{ achievementResult.promoted }}） · 未变 {{ achievementResult.unchanged }} · 该账号没有
-            {{ achievementResult.unavailable }} · 失败 {{ achievementResult.failed }}
-            <template v-if="achievementResult.pending > 0">
-              · 还剩 {{ achievementResult.pending }} 个，再点一次继续
-            </template>
-          </div>
-          <ul v-if="achievementResult?.warnings.length" class="warn-list" style="margin-top: 6px">
-            <li v-for="(warning, index) in achievementResult.warnings.slice(0, 5)" :key="index">
-              {{ warning }}
-            </li>
-          </ul>
         </div>
       </div>
 
@@ -682,12 +818,14 @@ onMounted(() => {
         <div>
           <strong>同步语义</strong>
           <ul class="warn-list">
+            <li>一键同步按「愿望单 → 库存 → 成就」串行执行，单个步骤失败不会中断其它步骤</li>
+            <li>成就按批检查（约 8 个/秒），批与批之间留间隔；网络抖动会自动重试一次</li>
             <li>每个游戏关联到它的账号：库存 / 愿望单按账号分别统计、分别筛选</li>
             <li>多个账号拥有同一个游戏时，时长取最大值，小号同步不会覆盖主号</li>
             <li>元数据（标题、封面、价格、评价）以 Steam 为准</li>
             <li>状态、评分、备注、进度以你本地为准，重复同步不会被打回去</li>
             <li>有游玩时长的已拥有游戏算「在玩」，没玩过的算「待玩」</li>
-            <li>收成就检查会把全成就的游戏标为「已通关」，你手动标过的状态不会回退</li>
+            <li>全成就的游戏会标为「已通关」，你手动标过的状态不会回退</li>
             <li>Steam 时长：没手填过就自动跟随；手填过则保留本地，清空可恢复跟随</li>
             <li>来源里消失的条目只按该账号提示、不删除</li>
             <li>价格为账号区域价格：与全局区域不同的账号会在「补全元数据」时单独取价</li>
@@ -695,6 +833,42 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 同步进度 -->
+    <template v-if="syncSteps.length">
+      <div class="divider" />
+      <div class="panel-head">
+        <div>
+          <h2 style="font-size: 16px">同步进度</h2>
+          <div class="desc">
+            {{ syncAccountLabel }} · 已处理 {{ syncFinished }} / {{ syncSteps.length }} 个步骤
+            <template v-if="syncFailed"> · {{ syncFailed }} 个失败</template>
+          </div>
+        </div>
+        <span class="badge" :class="syncStateClass">{{ syncStateLabel }}</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" :style="{ width: `${syncPercent}%` }" />
+      </div>
+      <div class="sync-steps">
+        <div v-for="step in syncSteps" :key="step.key" class="sync-step" :class="step.status">
+          <span class="sync-step-icon">{{ stepIcon(step) }}</span>
+          <div class="sync-step-main">
+            <div class="row tight">
+              <strong>{{ step.label }}</strong>
+              <span class="hint">{{ step.detail }}</span>
+            </div>
+            <div v-if="step.error" class="hint danger-text" style="margin-top: 3px">{{ step.error }}</div>
+            <ul v-if="step.warnings.length" class="warn-list" style="margin-top: 4px">
+              <li v-for="(warning, index) in step.warnings" :key="index">{{ warning }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div v-if="syncPreview.length" class="game-grid" style="margin-top: 12px">
+        <GameCard v-for="item in syncPreview" :key="item.game.id" :item="item" />
+      </div>
+    </template>
 
     <template v-if="result">
       <div class="divider" />

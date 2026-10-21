@@ -40,10 +40,15 @@ struct ResolvedAccount {
     warnings: Vec<String>,
 }
 
+/// 账号资料在这个时间窗内不重复抓取：一次「一键同步」有多个步骤，
+/// 没必要每一步都请求 `GetPlayerSummaries`。手动「添加账号」始终会强制刷新。
+const PROFILE_REFRESH_TTL_SECS: i64 = 300;
+
 async fn resolve_request_account(
     state: &AppState,
     account_id: Option<i64>,
     steam_id: Option<&str>,
+    refresh_profile: bool,
 ) -> ApiResult<ResolvedAccount> {
     if account_id.is_some() && steam_id.is_some_and(|value| !value.trim().is_empty()) {
         return Err(ApiError(Error::invalid(
@@ -52,7 +57,7 @@ async fn resolve_request_account(
     }
 
     let mut warnings = Vec::new();
-    let (input, existing) = match account_id {
+    let (input, existing, refresh) = match account_id {
         Some(account_id) => {
             let account = state
                 .db
@@ -66,7 +71,14 @@ async fn resolve_request_account(
                     account.source.label()
                 ))));
             }
-            (account.external_id.clone(), Some(account))
+            let stale = account
+                .metadata_updated_at
+                .is_none_or(|at| (Utc::now() - at).num_seconds() >= PROFILE_REFRESH_TTL_SECS);
+            (
+                account.external_id.clone(),
+                Some(account),
+                refresh_profile && stale,
+            )
         }
         None => {
             let input = steam_id
@@ -77,7 +89,7 @@ async fn resolve_request_account(
                         "请提供 account_id（选择账号）或 steam_id（直接填写 ID / 个性域名）",
                     ))
                 })?;
-            (input.to_string(), None)
+            (input.to_string(), None, refresh_profile)
         }
     };
 
@@ -97,12 +109,16 @@ async fn resolve_request_account(
         Err(err) => return Err(ApiError(err)),
     };
 
-    let profile = match state.steam.fetch_profile(&resolved).await {
-        Ok(profile) => Some(profile),
-        Err(err) => {
-            warnings.push(format!("账号资料刷新失败：{err}"));
-            None
+    let profile = if refresh {
+        match state.steam.fetch_profile(&resolved).await {
+            Ok(profile) => Some(profile),
+            Err(err) => {
+                warnings.push(format!("账号资料刷新失败：{err}"));
+                None
+            }
         }
+    } else {
+        None
     };
 
     let (account, _) = state
@@ -137,8 +153,13 @@ pub async fn import_steam_wishlist(
     State(state): State<AppState>,
     ValidJson(request): ValidJson<SteamWishlistRequest>,
 ) -> ApiResult<Json<ImportResponse>> {
-    let resolved_account =
-        resolve_request_account(&state, request.account_id, request.steam_id.as_deref()).await?;
+    let resolved_account = resolve_request_account(
+        &state,
+        request.account_id,
+        request.steam_id.as_deref(),
+        !request.options.dry_run,
+    )
+    .await?;
     let account = resolved_account.account;
 
     let fetch = state.steam.fetch_wishlist(&account.external_id).await?;
@@ -206,8 +227,13 @@ pub async fn import_steam_library(
     State(state): State<AppState>,
     ValidJson(request): ValidJson<SteamLibraryRequest>,
 ) -> ApiResult<Json<ImportResponse>> {
-    let resolved_account =
-        resolve_request_account(&state, request.account_id, request.steam_id.as_deref()).await?;
+    let resolved_account = resolve_request_account(
+        &state,
+        request.account_id,
+        request.steam_id.as_deref(),
+        !request.options.dry_run,
+    )
+    .await?;
     let account = resolved_account.account;
 
     let fetch = state.steam.fetch_library(&account.external_id).await?;
@@ -288,8 +314,13 @@ pub async fn sync_steam_achievements(
     let started = Instant::now();
     let limit = request.limit.unwrap_or(200).clamp(1, 500);
 
-    let resolved =
-        resolve_request_account(&state, request.account_id, request.steam_id.as_deref()).await?;
+    let resolved = resolve_request_account(
+        &state,
+        request.account_id,
+        request.steam_id.as_deref(),
+        true,
+    )
+    .await?;
     let account = resolved.account;
     let steam_id = account.external_id.clone();
     let mut base_warnings = resolved.warnings;

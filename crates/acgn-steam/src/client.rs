@@ -38,6 +38,10 @@ const MAX_WISHLIST_PAGES: u32 = 60;
 /// 官方接口最多翻多少页（分页语义若变化，靠告警暴露而不是静默截断）。
 const MAX_OFFICIAL_PAGES: u32 = 60;
 
+/// 愿望单分页之间的最小间隔：一次同步可能翻几十页，给 Steam 留一点喘息，
+/// 配合「一键同步」的串行执行，避免匿名接口被短时间打满。
+const WISHLIST_PAGE_DELAY_MS: u64 = 250;
+
 /// 商店详情接口的兜底国家：国区不售的条目只有换区才能拿到数据。
 const FALLBACK_COUNTRY: &str = "us";
 
@@ -617,6 +621,9 @@ impl SteamClient {
             if fresh == 0 {
                 break;
             }
+            if page + 1 < MAX_WISHLIST_PAGES {
+                tokio::time::sleep(Duration::from_millis(WISHLIST_PAGE_DELAY_MS)).await;
+            }
         }
 
         if items.is_empty() {
@@ -708,6 +715,7 @@ impl SteamClient {
                 break;
             }
             cursor = Some(next);
+            tokio::time::sleep(Duration::from_millis(WISHLIST_PAGE_DELAY_MS)).await;
         }
 
         // 官方接口只有 appid：批量补名称 / 类型 / 海报（匿名、50 条/次），
