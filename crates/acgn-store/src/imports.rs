@@ -656,18 +656,31 @@ impl Db {
                     let row = load_in_tx(&mut tx, item.source, &item.external_id)
                         .await?
                         .ok_or_else(|| Error::storage("关系行修复失败"))?;
+                    // 修好关系行后走与主分支相同的差异判定：病态库里如果元数据本来就
+                    // 一致，只刷新 last_synced_at，不要让 updated_at 一直漂移。
+                    let metadata_json_changed = metadata_json_differs(&row, item);
                     let mut game = row.into_domain()?.game;
-                    merge_metadata(&mut game, item);
-                    game.metadata_updated_at = Some(now);
-                    update_game_in_tx(&mut tx, &game, now).await?;
-                    write_metadata_json_in_tx(&mut tx, game.id, item, now).await?;
+                    let changed = merge_metadata(&mut game, item);
+                    let had_metadata = game.metadata_updated_at.is_some();
+                    let any_change = changed || metadata_json_changed || !had_metadata;
+                    if any_change {
+                        game.metadata_updated_at = Some(now);
+                        update_game_in_tx(&mut tx, &game, now).await?;
+                        if metadata_json_changed {
+                            write_metadata_json_in_tx(&mut tx, game.id, item, now).await?;
+                        }
+                    }
                     sqlx::query("UPDATE library_entries SET last_synced_at = ? WHERE game_id = ?")
                         .bind(now)
                         .bind(game.id)
                         .execute(&mut *tx)
                         .await
                         .db()?;
-                    MetadataOutcome::Updated(game.id)
+                    if any_change {
+                        MetadataOutcome::Updated(game.id)
+                    } else {
+                        MetadataOutcome::Unchanged(game.id)
+                    }
                 } else {
                     let game = game_from_item(item, now, true);
                     let game_id =

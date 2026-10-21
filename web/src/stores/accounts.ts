@@ -11,22 +11,30 @@ export const useAccountsStore = defineStore("accounts", () => {
   const loading = ref(false);
   const error = ref("");
 
+  /** 进行中的请求：并发调用复用同一个 Promise，`await` 之后一定是最新列表。 */
+  let inflight: Promise<void> | null = null;
+
   /**
    * 每次都重新拉取：账号是本地 SQLite 的一张小表，请求很便宜；
    * 页面挂载 / 同步结束 / 删除账号后都希望看到最新数据。
-   * 并发调用由 `loading` 去重，避免同一时刻重复请求。
    */
-  async function load() {
-    if (loading.value) return;
-    loading.value = true;
-    error.value = "";
-    try {
-      items.value = await listAccounts();
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : String(err);
-    } finally {
-      loading.value = false;
-    }
+  function load(): Promise<void> {
+    if (inflight) return inflight;
+
+    inflight = (async () => {
+      loading.value = true;
+      error.value = "";
+      try {
+        items.value = await listAccounts();
+      } catch (err) {
+        error.value = err instanceof Error ? err.message : String(err);
+      } finally {
+        loading.value = false;
+        inflight = null;
+      }
+    })();
+
+    return inflight;
   }
 
   function byId(id: number | null | undefined): AccountSummary | null {

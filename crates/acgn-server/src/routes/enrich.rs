@@ -146,10 +146,34 @@ pub async fn enrich(
         last_error,
     } = state.steam.app_details_batch(&appids).await?;
 
-    // 全都被限流/拒绝时直接返回 422：让用户看到「稍后重试」，而不是伪造一个 0 成功的 200
+    // 全都被限流/拒绝时直接返回 422：让用户看到「稍后重试」，而不是伪造一个 0 成功的 200。
+    // 失败也要在同步历史里留一笔（与价格段的失败落账口径一致）。
     if items.is_empty()
         && let Some(err) = last_error
     {
+        let duration_ms = started.elapsed().as_millis() as i64;
+        match state
+            .db
+            .begin_run(
+                Source::Steam,
+                "metadata_enrich",
+                Some(serde_json::json!({ "limit": limit })),
+            )
+            .await
+        {
+            Ok(run_id) => {
+                if let Err(record_err) = state
+                    .db
+                    .finish_run_err(run_id, &err.to_string(), duration_ms)
+                    .await
+                {
+                    tracing::warn!(run_id, error = %record_err, "写入失败记录时又出错了");
+                }
+            }
+            Err(record_err) => {
+                tracing::warn!(error = %record_err, "写入失败记录时又出错了");
+            }
+        }
         return Err(ApiError(err));
     }
 
