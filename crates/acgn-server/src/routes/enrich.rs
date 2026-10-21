@@ -98,6 +98,32 @@ pub async fn enrich(
                     duration_ms,
                 )
                 .await?;
+        } else {
+            // 价格段一个目标都没进入循环（例如第一个国家就网络失败）：
+            // 也留一条失败记录，避免「失败也会落库」在这里断档。
+            let run_id = state
+                .db
+                .begin_run(
+                    Source::Steam,
+                    "metadata_enrich",
+                    Some(serde_json::json!({
+                        "limit": limit,
+                        "phase": "account_prices",
+                        "account_prices": 0,
+                    })),
+                )
+                .await?;
+            let reason = pass
+                .warnings
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("；");
+            state
+                .db
+                .finish_run_err(run_id, &reason, duration_ms)
+                .await?;
         }
 
         return Ok(Json(EnrichSummary {

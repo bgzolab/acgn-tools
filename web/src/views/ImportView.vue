@@ -213,7 +213,8 @@ const syncAccountLabel = ref("");
 const achievementDone = ref(0);
 const achievementTotal = ref(0);
 
-const result = ref<ImportResponse | null>(null);
+/** 最近一次 JSON 导入 / 备份还原的结果（一键同步有自己的进度面板，不用这块） */
+const jsonResult = ref<ImportResponse | null>(null);
 
 /** 结果来自哪种导入：徽章按 mode 映射（JSON 导入 / 备份还原不能标成「愿望单」） */
 const IMPORT_MODE_LABELS: Record<string, string> = {
@@ -224,18 +225,15 @@ const IMPORT_MODE_LABELS: Record<string, string> = {
   manual: "手动",
 };
 
-const resultModeLabel = computed(
-  () => IMPORT_MODE_LABELS[result.value?.summary.mode ?? ""] ?? result.value?.summary.mode ?? "—",
+const jsonModeLabel = computed(
+  () =>
+    IMPORT_MODE_LABELS[jsonResult.value?.summary.mode ?? ""] ??
+    jsonResult.value?.summary.mode ??
+    "—",
 );
 
-/** 结果是不是库存导入：missing 文案不同（愿望单 vs 库存） */
-const resultIsLibrary = computed(() => result.value?.summary.mode === "steam_library");
-
-/** 本次结果对应的账号名（预览时 run 为 null） */
-const resultAccountLabel = computed(() => {
-  const fromRun = result.value?.run?.args?.account;
-  return typeof fromRun === "string" && fromRun ? fromRun : "";
-});
+/** JSON 导入结果是不是库存口径：missing 文案不同（愿望单 vs 库存） */
+const jsonIsLibrary = computed(() => jsonResult.value?.summary.mode === "steam_library");
 
 /** 库存导入 / 成就检查需要 API Key；fixture 离线模式不受此限制 */
 const libraryReady = computed(() => {
@@ -410,7 +408,6 @@ async function runSync(dryRun = false) {
     error: "",
     warnings: [],
   }));
-  result.value = null;
   const previews = new Map<number, GameWithEntry>();
 
   try {
@@ -564,7 +561,7 @@ async function runJsonImport() {
           options: { dry_run: jsonDryRun.value },
         });
 
-    if (!jsonDryRun.value) result.value = response;
+    if (!jsonDryRun.value) jsonResult.value = response;
 
     const summary = response.summary;
     const counts = `新增 ${summary.added} / 更新 ${summary.updated} / 未变 ${summary.unchanged} / 跳过 ${summary.skipped}`;
@@ -866,34 +863,6 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       </div>
     </template>
 
-    <template v-if="result">
-      <div class="divider" />
-      <div class="row" style="margin-bottom: 10px">
-        <strong v-if="result.run">运行 #{{ result.run.id }}</strong>
-        <strong v-else>预览结果（未写入）</strong>
-        <span v-if="resultAccountLabel" class="badge">{{ resultAccountLabel }}</span>
-        <span class="badge">{{ resultModeLabel }}</span>
-        <span class="badge ok">新增 {{ result.summary.added }}</span>
-        <span class="badge">更新 {{ result.summary.updated }}</span>
-        <span class="badge">未变 {{ result.summary.unchanged }}</span>
-        <span class="badge">跳过 {{ result.summary.skipped }}</span>
-        <span v-if="result.summary.missing" class="badge warn">
-          {{ resultIsLibrary ? "已不在库存" : "已不在愿望单" }} {{ result.summary.missing }}
-        </span>
-        <span class="hint">
-          {{ relativeTime(result.run?.started_at ?? new Date().toISOString()) }} ·
-          {{ result.summary.duration_ms }}ms
-        </span>
-      </div>
-
-      <ul v-if="result.summary.warnings.length" class="warn-list">
-        <li v-for="(warning, index) in result.summary.warnings" :key="index">{{ warning }}</li>
-      </ul>
-
-      <div v-if="result.preview.length" class="game-grid" style="margin-top: 12px">
-        <GameCard v-for="item in result.preview" :key="item.game.id" :item="item" />
-      </div>
-    </template>
   </div>
 
   <!-- 同步语义说明（点击标题旁的「?」打开） -->
@@ -982,6 +951,34 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       </label>
       <a class="btn ghost" :href="'/api/export/json'" target="_blank" rel="noreferrer">导出全量 JSON ↗</a>
     </div>
+
+    <template v-if="jsonResult">
+      <div class="divider" />
+      <div class="row" style="margin-bottom: 10px">
+        <strong v-if="jsonResult.run">运行 #{{ jsonResult.run.id }}</strong>
+        <strong v-else>预览结果（未写入）</strong>
+        <span class="badge">{{ jsonModeLabel }}</span>
+        <span class="badge ok">新增 {{ jsonResult.summary.added }}</span>
+        <span class="badge">更新 {{ jsonResult.summary.updated }}</span>
+        <span class="badge">未变 {{ jsonResult.summary.unchanged }}</span>
+        <span class="badge">跳过 {{ jsonResult.summary.skipped }}</span>
+        <span v-if="jsonResult.summary.missing" class="badge warn">
+          {{ jsonIsLibrary ? "已不在库存" : "已不在愿望单" }} {{ jsonResult.summary.missing }}
+        </span>
+        <span class="hint">
+          {{ relativeTime(jsonResult.run?.started_at ?? new Date().toISOString()) }} ·
+          {{ jsonResult.summary.duration_ms }}ms
+        </span>
+      </div>
+
+      <ul v-if="jsonResult.summary.warnings.length" class="warn-list">
+        <li v-for="(warning, index) in jsonResult.summary.warnings" :key="index">{{ warning }}</li>
+      </ul>
+
+      <div v-if="jsonResult.preview.length" class="game-grid" style="margin-top: 12px">
+        <GameCard v-for="item in jsonResult.preview" :key="item.game.id" :item="item" />
+      </div>
+    </template>
   </div>
 
   <!-- 历史 -->
