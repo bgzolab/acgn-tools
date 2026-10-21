@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 导入与同步：Steam 账号管理、愿望单 / 库存、离线 JSON、元数据补全、历史记录。 */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import {
   deleteAccount,
@@ -622,11 +622,21 @@ async function loadHistory() {
   }
 }
 
+// ---------------------------------------------------------------- 同步语义弹窗
+const showSyncHelp = ref(false);
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && showSyncHelp.value) showSyncHelp.value = false;
+}
+
 onMounted(() => {
   void meta.load();
   void loadAccounts();
   void loadHistory();
+  window.addEventListener("keydown", onKeydown);
 });
+
+onUnmounted(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>
@@ -766,7 +776,17 @@ onMounted(() => {
 
     <div class="panel-head">
       <div>
-        <h2 style="font-size: 16px">同步选中的账号</h2>
+        <h2 style="font-size: 16px">
+          同步选中的账号
+          <button
+            class="help-btn"
+            title="同步语义说明"
+            aria-label="同步语义说明"
+            @click="showSyncHelp = true"
+          >
+            ?
+          </button>
+        </h2>
         <div class="desc">
           <template v-if="selectedAccount">
             当前：{{ accounts.label(selectedAccount) }}（{{ selectedAccount.external_id }}）
@@ -777,60 +797,36 @@ onMounted(() => {
       <span class="badge">source_mode: {{ syncSourceMode || "—" }}</span>
     </div>
 
-    <div class="grid cols-2">
-      <div>
-        <div class="field">
-          <span class="label">一键同步（愿望单 → 库存 → 成就）</span>
-          <div class="hint" style="margin-bottom: 8px">
-            串行执行、按账号分别统计；成就每批 {{ ACHIEVEMENT_BATCH }} 个自动续跑，网络抖动自动重试一次。
-            库存与成就需要「游戏详情」公开 + 后端配置 STEAM_API_KEY。
-          </div>
-          <div class="row tight" style="margin-bottom: 8px">
-            <label class="switch">
-              <input v-model="includeDlc" type="checkbox" />
-              收下 DLC
-            </label>
-            <label class="switch">
-              <input v-model="includeNonGames" type="checkbox" />
-              收下软件/试玩
-            </label>
-          </div>
-          <div class="row">
-            <button
-              class="btn primary"
-              :disabled="syncing || !selectedAccount"
-              @click="runSync(false)"
-            >
-              {{ syncing ? "同步中…" : "一键同步" }}
-            </button>
-            <button class="btn" :disabled="syncing || !selectedAccount" @click="runSync(true)">
-              仅预览（不写入）
-            </button>
-          </div>
-          <div v-if="!libraryReady" class="hint" style="margin-top: 6px">
-            ⚠ 未检测到 STEAM_API_KEY：库存与成就会跳过，愿望单仍可导入
-          </div>
-        </div>
+    <div class="field" style="max-width: 760px">
+      <span class="label">一键同步（愿望单 → 库存 → 成就）</span>
+      <div class="hint" style="margin-bottom: 8px">
+        串行执行、按账号分别统计；成就每批 {{ ACHIEVEMENT_BATCH }} 个自动续跑，网络抖动自动重试一次。
+        库存与成就需要「游戏详情」公开 + 后端配置 STEAM_API_KEY。
       </div>
-
-      <div class="banner">
-        <span>ⓘ</span>
-        <div>
-          <strong>同步语义</strong>
-          <ul class="warn-list">
-            <li>一键同步按「愿望单 → 库存 → 成就」串行执行，单个步骤失败不会中断其它步骤</li>
-            <li>成就按批检查（约 8 个/秒），批与批之间留间隔；网络抖动会自动重试一次</li>
-            <li>每个游戏关联到它的账号：库存 / 愿望单按账号分别统计、分别筛选</li>
-            <li>多个账号拥有同一个游戏时，时长取最大值，小号同步不会覆盖主号</li>
-            <li>元数据（标题、封面、价格、评价）以 Steam 为准</li>
-            <li>状态、评分、备注、进度以你本地为准，重复同步不会被打回去</li>
-            <li>有游玩时长的已拥有游戏算「在玩」，没玩过的算「待玩」</li>
-            <li>全成就的游戏会标为「已通关」，你手动标过的状态不会回退</li>
-            <li>Steam 时长：没手填过就自动跟随；手填过则保留本地，清空可恢复跟随</li>
-            <li>来源里消失的条目只按该账号提示、不删除</li>
-            <li>价格为账号区域价格：与全局区域不同的账号会在「补全元数据」时单独取价</li>
-          </ul>
-        </div>
+      <div class="row tight" style="margin-bottom: 8px">
+        <label class="switch">
+          <input v-model="includeDlc" type="checkbox" />
+          收下 DLC
+        </label>
+        <label class="switch">
+          <input v-model="includeNonGames" type="checkbox" />
+          收下软件/试玩
+        </label>
+      </div>
+      <div class="row">
+        <button
+          class="btn primary"
+          :disabled="syncing || !selectedAccount"
+          @click="runSync(false)"
+        >
+          {{ syncing ? "同步中…" : "一键同步" }}
+        </button>
+        <button class="btn" :disabled="syncing || !selectedAccount" @click="runSync(true)">
+          仅预览（不写入）
+        </button>
+      </div>
+      <div v-if="!libraryReady" class="hint" style="margin-top: 6px">
+        ⚠ 未检测到 STEAM_API_KEY：库存与成就会跳过，愿望单仍可导入
       </div>
     </div>
 
@@ -899,6 +895,38 @@ onMounted(() => {
       </div>
     </template>
   </div>
+
+  <!-- 同步语义说明（点击标题旁的「?」打开） -->
+  <div v-if="showSyncHelp" class="modal-mask" @click="showSyncHelp = false" />
+  <section
+    v-if="showSyncHelp"
+    class="modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="sync-help-title"
+  >
+    <div class="modal-head">
+      <h2 id="sync-help-title">同步语义</h2>
+      <button class="icon-btn" title="关闭 (Esc)" @click="showSyncHelp = false">×</button>
+    </div>
+    <ul class="warn-list">
+      <li>一键同步按「愿望单 → 库存 → 成就」串行执行，单个步骤失败不会中断其它步骤</li>
+      <li>成就按批检查（约 8 个/秒），批与批之间留间隔；网络抖动会自动重试一次</li>
+      <li>每个游戏关联到它的账号：库存 / 愿望单按账号分别统计、分别筛选</li>
+      <li>多个账号拥有同一个游戏时，时长取最大值，小号同步不会覆盖主号</li>
+      <li>元数据（标题、封面、价格、评价）以 Steam 为准</li>
+      <li>状态、评分、备注、进度以你本地为准，重复同步不会被打回去</li>
+      <li>有游玩时长的已拥有游戏算「在玩」，没玩过的算「待玩」</li>
+      <li>全成就的游戏会标为「已通关」，你手动标过的状态不会回退</li>
+      <li>Steam 时长：没手填过就自动跟随；手填过则保留本地，清空可恢复跟随</li>
+      <li>来源里消失的条目只按该账号提示、不删除</li>
+      <li>价格为账号区域价格：与全局区域不同的账号会在「补全元数据」时单独取价</li>
+    </ul>
+    <div class="hint" style="margin-top: 10px">
+      「补全元数据」仍是独立操作：appdetails 有约 200 请求 / 5 分钟的限制，
+      放进一键同步会让一轮变得不可控。
+    </div>
+  </section>
 
   <!-- 元数据补全 -->
   <div class="panel">
