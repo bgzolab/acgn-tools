@@ -238,6 +238,22 @@ p {
   margin-top: 16px;
 }
 
+/*
+ * 网格与面板之间也要保持 16px 的纵向节奏：
+ * 之前只有 .panel + .panel，首页的「统计卡片 → 面板 → 面板 → 两列网格」
+ * 会在 grid 与 panel 交界处贴在一起。
+ */
+.grid + .panel,
+.panel + .grid,
+.grid + .grid {
+  margin-top: 16px;
+}
+
+/* 网格内部的面板由 gap 负责间距，不要再叠加相邻兄弟的 margin */
+.grid > .panel + .panel {
+  margin-top: 0;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
