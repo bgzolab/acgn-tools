@@ -62,35 +62,49 @@ impl Db {
         let now = Utc::now();
         let mut tx = self.pool.begin().await.db()?;
 
-        let inserted = sqlx::query(
-            "INSERT INTO accounts (
-                source, external_id, display_name, avatar_url, profile_url, country_code,
-                metadata_json, metadata_updated_at, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (source, external_id) DO NOTHING",
-        )
-        .bind(source.as_str())
-        .bind(external_id)
-        .bind(
-            profile
-                .and_then(|p| p.display_name.as_deref())
-                .map(str::trim),
-        )
-        .bind(profile.and_then(|p| p.avatar_url.as_deref()))
-        .bind(profile.and_then(|p| p.profile_url.as_deref()))
-        .bind(profile.and_then(|p| normalize_country(p.country_code.as_deref())))
-        .bind(
-            profile
-                .and_then(|p| p.metadata.as_ref())
-                .map(|v| v.to_string()),
-        )
-        .bind(profile.map(|_| now))
-        .bind(now)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .db()?;
-        let created = inserted.rows_affected() > 0;
+        // 先查再插：`INSERT ... ON CONFLICT DO NOTHING` 即使冲突也会消耗
+        // AUTOINCREMENT 序号，长期同步会让账号 id 出现大量空洞。
+        let existing: Option<AccountRow> =
+            sqlx::query_as("SELECT * FROM accounts WHERE source = ? AND external_id = ?")
+                .bind(source.as_str())
+                .bind(external_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .db()?;
+
+        let created = if existing.is_some() {
+            false
+        } else {
+            let inserted = sqlx::query(
+                "INSERT INTO accounts (
+                    source, external_id, display_name, avatar_url, profile_url, country_code,
+                    metadata_json, metadata_updated_at, created_at, updated_at
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT (source, external_id) DO NOTHING",
+            )
+            .bind(source.as_str())
+            .bind(external_id)
+            .bind(
+                profile
+                    .and_then(|p| p.display_name.as_deref())
+                    .map(str::trim),
+            )
+            .bind(profile.and_then(|p| p.avatar_url.as_deref()))
+            .bind(profile.and_then(|p| p.profile_url.as_deref()))
+            .bind(profile.and_then(|p| normalize_country(p.country_code.as_deref())))
+            .bind(
+                profile
+                    .and_then(|p| p.metadata.as_ref())
+                    .map(|v| v.to_string()),
+            )
+            .bind(profile.map(|_| now))
+            .bind(now)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .db()?;
+            inserted.rows_affected() > 0
+        };
 
         let current: AccountRow =
             sqlx::query_as("SELECT * FROM accounts WHERE source = ? AND external_id = ?")
@@ -105,6 +119,15 @@ impl Db {
             // 内容真的变化才刷新 updated_at；只是「又抓了一遍资料」不算内容变化
             // （metadata_updated_at 是抓取时间，每次成功抓取都会推进）。
             if next != current {
+                let country_before = current
+                    .country_override
+                    .clone()
+                    .or_else(|| current.country_code.clone());
+                let country_after = next
+                    .country_override
+                    .clone()
+                    .or_else(|| next.country_code.clone());
+
                 let mut next = next;
                 next.metadata_updated_at = Some(now);
                 next.updated_at = now;
@@ -124,6 +147,23 @@ impl Db {
                 .execute(&mut *tx)
                 .await
                 .db()?;
+
+                // 资料区域变了（例如 loccountrycode 从空变为可用）：旧区域的价格
+                // 全部作废，等下次「补全」按新区域重抓，避免一直展示旧币种。
+                if country_before != country_after {
+                    sqlx::query(
+                        "UPDATE game_accounts SET price_currency = NULL, price_initial = NULL,
+                            price_final = NULL, discount_percent = NULL, is_free = NULL,
+                            price_updated_at = NULL, updated_at = ?
+                         WHERE account_id = ?",
+                    )
+                    .bind(now)
+                    .bind(current.id)
+                    .execute(&mut *tx)
+                    .await
+                    .db()?;
+                }
+
                 tx.commit().await.db()?;
                 return Ok((next.into_domain()?, created));
             }

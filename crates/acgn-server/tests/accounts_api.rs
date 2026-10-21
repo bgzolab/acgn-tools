@@ -365,3 +365,90 @@ async fn enrich_fills_prices_for_the_account_region() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["account_prices"], 0);
 }
+
+/// 账号区域查不到条目（下架 / 不售）时要把关联标记为「已查过、无价格」，
+/// 否则每次补全都会重复排队同一个 appid，永远不会收敛。
+#[tokio::test]
+async fn enrich_converges_when_a_region_has_no_listing() {
+    let (app, db) = test_app("enrich-empty").await;
+    let (account, _) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000003",
+            Some(&AccountProfile {
+                display_name: Some("No Listing".to_string()),
+                country_code: Some("us".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    // 400 不在 fixture 的 appdetails.json 里：模拟该区域没有可售条目
+    seed_library(&db, account.id, "400", "No Listing", 10).await;
+
+    let (status, body) = send(
+        &app,
+        json_request("POST", "/api/enrich", &json!({ "limit": 20 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["account_prices"], 1, "应把该关联标记为已确认");
+
+    let (status, body) = send(&app, get(&format!("/api/games?account_id={}", account.id))).await;
+    assert_eq!(status, StatusCode::OK);
+    let link = &body["items"][0]["accounts"][0];
+    assert!(link["price_final"].is_null());
+    assert!(
+        link["price_updated_at"].is_string(),
+        "没有售价也要记录「查过了」：{link}"
+    );
+
+    // 元数据仍未补全（会再试），但价格不再重复排队。
+    let (status, body) = send(
+        &app,
+        json_request("POST", "/api/enrich", &json!({ "limit": 20 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["account_prices"], 0, "价格目标应已收敛：{body}");
+}
+
+/// 仅预览（dry_run）走 steam_id 兼容入口时也不能创建账号。
+#[tokio::test]
+async fn dry_run_does_not_create_an_account() {
+    let (app, _db) = test_app("dryrun-account").await;
+    let body = json!({
+        "steam_id": "76561198000000000",
+        "preview": false,
+        "options": { "dry_run": true }
+    });
+
+    let (status, response) = send(
+        &app,
+        json_request("POST", "/api/imports/steam/wishlist", &body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert!(response["run"].is_null(), "预览不写运行记录");
+
+    let (status, accounts) = send(&app, get("/api/accounts")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        accounts.as_array().is_some_and(|items| items.is_empty()),
+        "仅预览不能创建账号：{accounts}"
+    );
+
+    // 正式导入才建号
+    let (status, response) = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/imports/steam/wishlist",
+            &json!({ "steam_id": "76561198000000000", "preview": false }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let (_, accounts) = send(&app, get("/api/accounts")).await;
+    assert_eq!(accounts.as_array().unwrap().len(), 1);
+}

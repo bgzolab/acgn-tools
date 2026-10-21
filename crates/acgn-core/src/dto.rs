@@ -355,7 +355,8 @@ pub struct EnrichSummary {
     pub succeeded: i64,
     pub failed: i64,
     pub skipped: i64,
-    /// 本轮写入的账号区域价格条数（同一游戏的不同账号区域各算一条）
+    /// 本轮处理完的账号区域价格条数（同一游戏的不同账号区域各算一条；
+    /// 含「该区域没有售价」的已确认条目）
     pub account_prices: i64,
     pub warnings: Vec<String>,
     pub source_mode: String,

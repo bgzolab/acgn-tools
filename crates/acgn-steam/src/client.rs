@@ -303,7 +303,7 @@ impl SteamClient {
     /// 3. 没有 Key：社区资料 XML（只有昵称 / 头像 / 主页，没有区域）。
     pub async fn fetch_profile(&self, steam_id: &str) -> Result<AccountProfile> {
         if let Some(fixture) = &self.fixture {
-            return fixture.account_profile();
+            return fixture.account_profile(steam_id);
         }
 
         if let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) {

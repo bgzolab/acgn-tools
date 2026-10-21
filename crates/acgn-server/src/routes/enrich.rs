@@ -88,9 +88,11 @@ pub async fn enrich(
                         seen: pass.attempted,
                         added: 0,
                         updated: pass.written,
-                        unchanged: pass.attempted - pass.written,
+                        unchanged: 0,
                         skipped: 0,
-                        missing: 0,
+                        // 与元数据补全一致：没写成功的条目按「抓取失败」记，
+                        // 不要把失败混进 unchanged（unchanged = 抓到了但没有差异）。
+                        missing: pass.attempted - pass.written,
                     },
                     &pass.warnings,
                     duration_ms,
@@ -261,8 +263,10 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
             .map(|item| (item.external_id.clone(), item))
             .collect();
 
+        let mut missing = Vec::new();
         for target in targets {
             let Some(item) = by_appid.remove(&target.external_id) else {
+                missing.push(target);
                 continue;
             };
             let price = AccountPrice {
@@ -278,6 +282,26 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
                 .await?
             {
                 written += 1;
+            }
+        }
+
+        // 一批请求全部正常回答、只是某些 appid 在該区域没有可售条目（success:false /
+        // 已下架）时，把关联标记为「已查过、无价格」，否则每次补全都会重复请求同一个
+        // appid，永远收敛不了。只要本轮有请求级错误（网络 / 限流），就保持 pending 重试。
+        if last_error.is_none() {
+            for target in missing {
+                if state
+                    .db
+                    .update_account_price(
+                        target.game_id,
+                        target.account_id,
+                        &AccountPrice::default(),
+                        Utc::now(),
+                    )
+                    .await?
+                {
+                    written += 1;
+                }
             }
         }
 

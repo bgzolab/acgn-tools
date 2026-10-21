@@ -167,16 +167,35 @@ impl FixtureData {
 
     /// 账号资料：fixture 里没有 `profile.json` 时明确报错（调用方当作告警处理，
     /// 账号仍会创建，只是没有昵称 / 头像）。
-    pub fn account_profile(&self) -> Result<AccountProfile> {
+    ///
+    /// fixture 只有一份演示资料，必须校验请求的 steamID 与它一致：否则随便输入一个
+    /// 数字 ID 都会把「ACGN Demo」的昵称 / 头像 / 区域挂到另一个账号上，演示模式里
+    /// 很难看出这是假数据。
+    pub fn account_profile(&self, steam_id: &str) -> Result<AccountProfile> {
         let Some(path) = self.profile_path.as_ref().filter(|path| path.exists()) else {
             return Err(Error::rejected(
                 "离线 fixture 未提供 profile.json：无法读取账号昵称 / 头像（重新生成 fixture 或改用真实网络）",
             ));
         };
+        if let Some(fixture_id) = self.steam_id.as_deref()
+            && fixture_id != steam_id
+        {
+            return Err(Error::rejected(format!(
+                "fixture 账号资料固定为 steam_id={fixture_id}，与请求的 {steam_id} 不一致（fixture 模式请使用内置 ID）"
+            )));
+        }
         let player = self
             .profile
             .as_ref()
             .ok_or_else(|| Error::rejected(format!("fixture 账号资料为空：{}", path.display())))?;
+        if let Some(player_id) = player.get("steamid").and_then(|value| value.as_str())
+            && player_id != steam_id
+        {
+            return Err(Error::rejected(format!(
+                "fixture 账号资料的 steamid={player_id} 与请求的 {steam_id} 不一致（{}）",
+                path.display()
+            )));
+        }
 
         player_to_profile(player).ok_or_else(|| {
             Error::invalid(format!(
@@ -343,9 +362,15 @@ mod tests {
         let fixture = FixtureData::load(&dir).expect("fixture 应能载入");
         assert_eq!(fixture.steam_id.as_deref(), Some("76561198000000000"));
 
-        let profile = fixture.account_profile().expect("账号资料应能载入");
+        let profile = fixture
+            .account_profile("76561198000000000")
+            .expect("账号资料应能载入");
         assert_eq!(profile.display_name.as_deref(), Some("Fixture"));
         assert_eq!(profile.country_code.as_deref(), Some("US"));
+        assert!(
+            fixture.account_profile("76561198000000009").is_err(),
+            "fixture 只有一份资料，steamID 不一致时必须报错"
+        );
 
         let response = fixture.app_details("1").expect("应有详情");
         let data = response.data.as_ref().expect("应有 data");
@@ -398,7 +423,7 @@ mod tests {
             "路径仍应指向预期的 profile.json"
         );
         assert!(
-            fixture.account_profile().is_err(),
+            fixture.account_profile("76561198000000000").is_err(),
             "缺 profile.json 时账号资料应明确报错"
         );
 

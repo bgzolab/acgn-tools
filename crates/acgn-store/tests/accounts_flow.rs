@@ -8,8 +8,8 @@
 //! * 区域价格按账号保存，改区域会清掉旧区域的价格缓存。
 
 use acgn_core::{
-    AccountProfile, AccountSummary, EntryPatch, GameListQuery, ImportOptions, Source, SourceItem,
-    Status,
+    AccountProfile, AccountSummary, AchievementProgress, EntryPatch, GameListQuery, ImportOptions,
+    Source, SourceItem, Status,
 };
 use acgn_store::{AccountPrice, Db, GameFilters, ImportRequest, MissingScope};
 use chrono::Utc;
@@ -732,4 +732,181 @@ async fn dry_run_with_account_writes_nothing_but_reports_the_same_diff() {
     .await;
     assert_eq!(real.added, 1);
     assert_eq!(account_of(&db, "76561198000000001").await.owned_count, 1);
+}
+
+/// 资料里的区域变化（不是手动 override）也要清掉旧区域的价格缓存。
+#[tokio::test]
+async fn profile_country_change_clears_cached_prices() {
+    let db = setup().await;
+    let (account, _) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000001",
+            Some(&profile("A", "cn")),
+        )
+        .await
+        .unwrap();
+    import_for(
+        &db,
+        account.id,
+        MissingScope::Library,
+        &[library_item("4100", "Regional", 10)],
+    )
+    .await;
+
+    let game_id = get(&db, "4100").await.game.id;
+    db.update_account_price(
+        game_id,
+        account.id,
+        &AccountPrice {
+            currency: Some("CNY".to_string()),
+            initial: Some(1000),
+            final_price: Some(800),
+            discount_percent: Some(20),
+            is_free: Some(false),
+        },
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+
+    // Steam 资料里的区域从 cn 变成 us（没有手动 override）
+    let (updated, created) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000001",
+            Some(&profile("A", "us")),
+        )
+        .await
+        .unwrap();
+    assert!(!created);
+    assert_eq!(updated.effective_country.as_deref(), Some("us"));
+
+    let link = db.accounts_for_game(game_id).await.unwrap().remove(0);
+    assert!(
+        link.price_final.is_none() && link.price_updated_at.is_none(),
+        "区域变了，旧区域的币种/价格必须作废"
+    );
+    let pending = db
+        .pending_account_prices(Source::Steam, "cn", 20)
+        .await
+        .unwrap();
+    assert!(
+        pending
+            .iter()
+            .any(|target| target.account_id == account.id && target.country == "us"),
+        "新区域应重新排入补价队列"
+    );
+}
+
+/// 成就候选按账号圈定：A 的检查只轮 A 的库存，B 的计数不受影响。
+#[tokio::test]
+async fn achievements_are_scoped_to_the_accounts_library() {
+    let db = setup().await;
+    let (a, _) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000001",
+            Some(&profile("A", "cn")),
+        )
+        .await
+        .unwrap();
+    let (b, _) = db
+        .upsert_account(
+            Source::Steam,
+            "76561198000000002",
+            Some(&profile("B", "us")),
+        )
+        .await
+        .unwrap();
+
+    import_for(
+        &db,
+        a.id,
+        MissingScope::Library,
+        &[
+            library_item("3001", "A One", 10),
+            library_item("3002", "A Two", 20),
+        ],
+    )
+    .await;
+    import_for(
+        &db,
+        b.id,
+        MissingScope::Library,
+        &[library_item("3003", "B One", 30)],
+    )
+    .await;
+
+    let a_pending = db
+        .pending_achievements(Source::Steam, Some(a.id), 10)
+        .await
+        .unwrap();
+    let a_ids: Vec<&str> = a_pending
+        .iter()
+        .map(|entry| entry.external_id.as_str())
+        .collect();
+    assert_eq!(a_ids, vec!["3001", "3002"], "只轮 A 的库存");
+
+    let b_pending = db
+        .pending_achievements(Source::Steam, Some(b.id), 10)
+        .await
+        .unwrap();
+    assert_eq!(b_pending[0].external_id, "3003");
+
+    assert_eq!(
+        db.achievements_pending_count(Source::Steam, Some(a.id))
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.achievements_pending_count(Source::Steam, Some(b.id))
+            .await
+            .unwrap(),
+        1
+    );
+    // 旧口径（不带账号）仍覆盖所有库存条目，兼容历史调用。
+    assert_eq!(
+        db.pending_achievements(Source::Steam, None, 10)
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+
+    // 检查 A 的一个游戏：只减少 A 的「从未检查」计数，B 不受影响。
+    let game_id = get(&db, "3001").await.game.id;
+    db.update_achievements(
+        game_id,
+        Some(AchievementProgress {
+            achieved: 1,
+            total: 2,
+        }),
+        Utc::now(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        db.achievements_pending_count(Source::Steam, Some(a.id))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.achievements_pending_count(Source::Steam, Some(b.id))
+            .await
+            .unwrap(),
+        1
+    );
+    let a_pending = db
+        .pending_achievements(Source::Steam, Some(a.id), 10)
+        .await
+        .unwrap();
+    assert_eq!(a_pending.len(), 2);
+    assert_eq!(
+        a_pending[0].external_id, "3002",
+        "从未检查过的排前面（3001 刚检查过）"
+    );
+    assert_eq!(a_pending[1].external_id, "3001");
 }

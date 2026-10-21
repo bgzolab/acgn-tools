@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use acgn_core::{
-    Account, AchievementSyncSummary, Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary,
+    AchievementSyncSummary, Error, GameWithEntry, ImportOptions, ImportRun, ImportSummary,
     RestoreItem, Source, SourceItem,
 };
 use acgn_store::{ImportRequest, MissingScope, RunCounts};
@@ -36,7 +36,10 @@ pub struct ImportResponse {
 ///
 /// 无论哪条路都会尽力刷新一次账号资料；资料抓取失败只记告警，不阻塞同步。
 struct ResolvedAccount {
-    account: Account,
+    /// 账号 id；`0` = 仅预览且账号尚不存在（不落库，按空关联预览）
+    id: i64,
+    external_id: String,
+    label: String,
     warnings: Vec<String>,
 }
 
@@ -109,24 +112,51 @@ async fn resolve_request_account(
         Err(err) => return Err(ApiError(err)),
     };
 
-    let profile = if refresh {
-        match state.steam.fetch_profile(&resolved).await {
+    if refresh {
+        let profile = match state.steam.fetch_profile(&resolved).await {
             Ok(profile) => Some(profile),
             Err(err) => {
                 warnings.push(format!("账号资料刷新失败：{err}"));
                 None
             }
-        }
-    } else {
-        None
+        };
+        let (account, _) = state
+            .db
+            .upsert_account(Source::Steam, &resolved, profile.as_ref())
+            .await?;
+        let label = account.display_label();
+        return Ok(ResolvedAccount {
+            id: account.id,
+            external_id: account.external_id,
+            label,
+            warnings,
+        });
+    }
+
+    // 不抓资料（dry-run / 资料仍在 TTL 内）：不写库。
+    // 账号不存在（只可能来自 steam_id + 仅预览）时用 id 0 做空关联预览，
+    // 这样「仅预览不写入」对 accounts 表也成立。
+    let existing = match existing {
+        Some(account) => Some(account),
+        None => state.db.find_account(Source::Steam, &resolved).await?,
     };
-
-    let (account, _) = state
-        .db
-        .upsert_account(Source::Steam, &resolved, profile.as_ref())
-        .await?;
-
-    Ok(ResolvedAccount { account, warnings })
+    Ok(match existing {
+        Some(account) => {
+            let label = account.display_label();
+            ResolvedAccount {
+                id: account.id,
+                external_id: account.external_id,
+                label,
+                warnings,
+            }
+        }
+        None => ResolvedAccount {
+            id: 0,
+            external_id: resolved.clone(),
+            label: format!("{} {resolved}", Source::Steam.label()),
+            warnings,
+        },
+    })
 }
 
 /// POST /api/imports/steam/wishlist
@@ -160,10 +190,14 @@ pub async fn import_steam_wishlist(
         !request.options.dry_run,
     )
     .await?;
-    let account = resolved_account.account;
+    let ResolvedAccount {
+        id: account_id,
+        external_id,
+        label,
+        mut warnings,
+    } = resolved_account;
 
-    let fetch = state.steam.fetch_wishlist(&account.external_id).await?;
-    let mut warnings = resolved_account.warnings;
+    let fetch = state.steam.fetch_wishlist(&external_id).await?;
     warnings.extend(fetch.warnings);
 
     let summary = state
@@ -174,8 +208,8 @@ pub async fn import_steam_wishlist(
             items: &fetch.items,
             options: request.options,
             args: Some(json!({
-                "account_id": account.id,
-                "account": account.display_label(),
+                "account_id": account_id,
+                "account": label,
                 "input": request.steam_id,
                 "steam_id": fetch.steam_id,
                 "source_mode": fetch.source_mode,
@@ -184,7 +218,7 @@ pub async fn import_steam_wishlist(
             source_mode: fetch.source_mode,
             extra_warnings: warnings,
             missing_scope: MissingScope::Wishlist,
-            account_id: Some(account.id),
+            account_id: Some(account_id),
         })
         .await?;
 
@@ -234,10 +268,14 @@ pub async fn import_steam_library(
         !request.options.dry_run,
     )
     .await?;
-    let account = resolved_account.account;
+    let ResolvedAccount {
+        id: account_id,
+        external_id,
+        label,
+        mut warnings,
+    } = resolved_account;
 
-    let fetch = state.steam.fetch_library(&account.external_id).await?;
-    let mut warnings = resolved_account.warnings;
+    let fetch = state.steam.fetch_library(&external_id).await?;
     warnings.extend(fetch.warnings);
 
     let summary = state
@@ -248,8 +286,8 @@ pub async fn import_steam_library(
             items: &fetch.items,
             options: request.options,
             args: Some(json!({
-                "account_id": account.id,
-                "account": account.display_label(),
+                "account_id": account_id,
+                "account": label,
                 "input": request.steam_id,
                 "steam_id": fetch.steam_id,
                 "source_mode": fetch.source_mode,
@@ -259,7 +297,7 @@ pub async fn import_steam_library(
             extra_warnings: warnings,
             // 库存导入只对「这个账号上次被库存同步见过」的条目负责
             missing_scope: MissingScope::Library,
-            account_id: Some(account.id),
+            account_id: Some(account_id),
         })
         .await?;
 
@@ -321,12 +359,15 @@ pub async fn sync_steam_achievements(
         true,
     )
     .await?;
-    let account = resolved.account;
-    let steam_id = account.external_id.clone();
-    let mut base_warnings = resolved.warnings;
+    let ResolvedAccount {
+        id: account_id,
+        external_id: steam_id,
+        label,
+        warnings: mut base_warnings,
+    } = resolved;
     let pending = state
         .db
-        .pending_achievements(Source::Steam, Some(account.id), limit)
+        .pending_achievements(Source::Steam, Some(account_id), limit)
         .await?;
 
     if pending.is_empty() {
@@ -354,8 +395,8 @@ pub async fn sync_steam_achievements(
             Source::Steam,
             "steam_achievements",
             Some(json!({
-                "account_id": account.id,
-                "account": account.display_label(),
+                "account_id": account_id,
+                "account": label,
                 "input": request.steam_id,
                 "steam_id": steam_id,
                 "limit": limit,
@@ -469,7 +510,7 @@ pub async fn sync_steam_achievements(
     // 收尾步骤失败时也不能把运行记录留在 running：尽力补一条失败记录再上抛
     let pending_after = match state
         .db
-        .achievements_pending_count(Source::Steam, Some(account.id))
+        .achievements_pending_count(Source::Steam, Some(account_id))
         .await
     {
         Ok(count) => count,
@@ -525,8 +566,8 @@ pub async fn sync_steam_achievements(
         return Err(ApiError(err));
     }
 
-    if let Err(err) = state.db.touch_account_synced(account.id, Utc::now()).await {
-        warn!(account_id = account.id, error = %err, "刷新账号同步时间失败");
+    if let Err(err) = state.db.touch_account_synced(account_id, Utc::now()).await {
+        warn!(account_id, error = %err, "刷新账号同步时间失败");
     }
 
     Ok(Json(AchievementSyncSummary {

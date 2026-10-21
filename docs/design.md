@@ -227,10 +227,14 @@ Steam prices depend on the store region. Each account has an effective region
 - `price_updated_at` means "this region was asked": no currency/final price with a timestamp is
   the honest "not sold in this region", not "not fetched". The UI only falls back to the global
   `games.price_*` when `price_updated_at` is still empty.
+- A country batch that answered normally but has no listing for an appid still marks that
+  association as checked (empty price), so the pass converges instead of retrying the same
+  delisted appid forever. A batch stopped by a request error keeps its targets pending.
 - Accounts whose effective region equals `STEAM_COUNTRY` are not fetched separately (the global
   price is the same region), and accounts without any region fall back to the global price too.
-- Changing an account's region clears its cached prices (`price_*`, `price_updated_at`) so the
-  next enrichment re-fetches them instead of showing the old region's currency.
+- Changing an account's **effective** region — a manual override or a profile `loccountrycode`
+  change — clears its cached prices (`price_*`, `price_updated_at`) so the next enrichment
+  re-fetches them instead of showing the old region's currency.
 - The same appdetails rate limit applies; a 429 stops the pass gracefully and leaves un-fetched
   associations pending for the next click.
 
@@ -348,7 +352,10 @@ Accounts are created on demand: `POST /api/accounts/resolve` (and any sync that 
 | Offline fixture (`profile.json`) | nothing | a frozen player object for the demo and tests |
 
 - Profile refreshes are best-effort: a failure is a warning and never blocks a wishlist / library
-  sync. The same profile fetched twice does not move `updated_at` (§4.4).
+  sync. The same profile fetched twice does not move `updated_at` (§4.4). Syncs refresh the
+  profile at most once per 5 minutes; `POST /api/accounts/resolve` always forces it.
+- In fixture mode the single demo profile only matches the fixture's built-in `steam_id`; a
+  different requested ID gets a warning instead of borrowing the demo name / avatar / region.
 - `loccountrycode` is the profile's location, not necessarily the account's purchase region, so
   `country_override` can be set manually (`PATCH /api/accounts/{id}`); an empty value restores
   following the profile. The effective region is `COALESCE(country_override, country_code)`.
