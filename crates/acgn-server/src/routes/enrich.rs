@@ -275,8 +275,14 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
         {
             Ok(batch) => batch,
             Err(err) => {
+                let rejected = matches!(err, Error::SourceRejected(_));
                 warnings.push(format!("账号区域 {country} 的价格抓取失败：{err}"));
-                break;
+                if rejected {
+                    warnings.push("已触发 Steam 限流：剩余国家的价格下次补全时继续".to_string());
+                    break;
+                }
+                // 普通网络 / 上游错误只影响这个国家，继续尝试后面的国家
+                continue;
             }
         };
 
@@ -340,7 +346,7 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
         }
         if matches!(last_error, Some(Error::SourceRejected(_))) {
             warnings.push(format!(
-                "账号区域 {country} 的价格触发 Steam 限流，剩余条目下次补全时继续"
+                "账号区域 {country} 的价格触发 Steam 限流，剩余国家/条目下次补全时继续"
             ));
             break;
         }

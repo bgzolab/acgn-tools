@@ -6,24 +6,22 @@ import { ref } from "vue";
 import { listAccounts } from "../api";
 import type { AccountSummary } from "../api/types";
 
-/** 列表缓存时长：切页面不重复请求，超过这个时间后自动重新拉取一次 */
-const CACHE_TTL_MS = 30_000;
-
 export const useAccountsStore = defineStore("accounts", () => {
   const items = ref<AccountSummary[]>([]);
   const loading = ref(false);
   const error = ref("");
-  const loadedAt = ref<number | null>(null);
 
-  async function load(force = false) {
+  /**
+   * 每次都重新拉取：账号是本地 SQLite 的一张小表，请求很便宜；
+   * 页面挂载 / 同步结束 / 删除账号后都希望看到最新数据。
+   * 并发调用由 `loading` 去重，避免同一时刻重复请求。
+   */
+  async function load() {
     if (loading.value) return;
-    const fresh = loadedAt.value !== null && Date.now() - loadedAt.value < CACHE_TTL_MS;
-    if (items.value.length && !force && fresh) return;
     loading.value = true;
     error.value = "";
     try {
       items.value = await listAccounts();
-      loadedAt.value = Date.now();
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err);
     } finally {
@@ -45,5 +43,5 @@ export const useAccountsStore = defineStore("accounts", () => {
     return `${source} ${account.external_id}`;
   }
 
-  return { items, loading, error, loadedAt, load, byId, label };
+  return { items, loading, error, load, byId, label };
 });

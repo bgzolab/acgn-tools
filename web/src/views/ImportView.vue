@@ -83,7 +83,7 @@ function selectAccount(id: number) {
 }
 
 async function loadAccounts() {
-  await accounts.load(true);
+  await accounts.load();
   const ids = new Set(accounts.items.map((account) => account.id));
   if (selectedAccountId.value !== null && ids.has(selectedAccountId.value)) return;
 
@@ -141,7 +141,7 @@ async function saveCountry() {
   savingCountry.value = true;
   try {
     const account = await patchAccountCountry(id, countryDraft.value.trim());
-    await accounts.load(true);
+    await accounts.load();
     cancelCountryEdit();
     pushToast(
       "ok",
@@ -477,7 +477,7 @@ async function runSync(dryRun = false) {
 
   // 条目数 / 最近同步时间 / 运行历史在整轮结束后统一刷新（dry-run 没有可刷新的）
   if (!dryRun) {
-    await Promise.all([loadHistory(), accounts.load(true)]);
+    await Promise.all([loadHistory(), accounts.load()]);
   }
 
   const failed = syncSteps.value.filter((step) => step.status === "failed");
