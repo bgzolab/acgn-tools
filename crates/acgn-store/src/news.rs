@@ -133,6 +133,24 @@ impl Db {
     ) -> Result<Page<GameNews>> {
         let page = page.clamp(1, 1_000_000);
         let per_page = per_page.clamp(1, 100);
+
+        let mut count_qb = QueryBuilder::new(
+            "SELECT COUNT(*) FROM game_news n JOIN games g ON g.id = n.game_id
+             WHERE n.language = ",
+        );
+        count_qb.push_bind(language);
+        if let Some(game_id) = game_id {
+            count_qb.push(" AND n.game_id = ").push_bind(game_id);
+        }
+        let total: i64 = count_qb
+            .build_query_scalar()
+            .fetch_one(&self.pool)
+            .await
+            .db()?;
+
+        // count 本来就要做：把 page 夹到真实总页数，OFFSET 永远不会扫过整个索引。
+        let total_pages = total.saturating_add(per_page - 1) / per_page;
+        let page = page.min(total_pages.max(1));
         let offset = (page - 1).saturating_mul(per_page);
 
         let mut qb = QueryBuilder::new(
@@ -156,20 +174,6 @@ impl Db {
             .push_bind(offset);
 
         let rows: Vec<GameNewsRow> = qb.build_query_as().fetch_all(&self.pool).await.db()?;
-
-        let mut count_qb = QueryBuilder::new(
-            "SELECT COUNT(*) FROM game_news n JOIN games g ON g.id = n.game_id
-             WHERE n.language = ",
-        );
-        count_qb.push_bind(language);
-        if let Some(game_id) = game_id {
-            count_qb.push(" AND n.game_id = ").push_bind(game_id);
-        }
-        let total: i64 = count_qb
-            .build_query_scalar()
-            .fetch_one(&self.pool)
-            .await
-            .db()?;
 
         let items = rows
             .into_iter()

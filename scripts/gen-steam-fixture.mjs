@@ -268,14 +268,49 @@ function readTag(block, name) {
   return decodeXmlEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")).trim();
 }
 
+/** 与 Rust 侧一致的剥标签扫描：纯文本里的 `<`（如 "2 < 3"）不当标签。 */
+function stripHtml(raw) {
+  let out = "";
+  let tag = null;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const ch = raw[index];
+    if (tag !== null) {
+      if (ch === ">") {
+        const name = tag
+          .trim()
+          .replace(/^\/+|\/+$/g, "")
+          .split(/\s+/)[0]
+          .toLowerCase();
+        if (name === "br") out += "\n";
+        else if (["p", "div", "li", "tr", "h1", "h2", "h3"].includes(name)) out += "\n\n";
+        tag = null;
+      } else {
+        tag += ch;
+      }
+      continue;
+    }
+
+    if (ch === "<") {
+      const next = raw[index + 1];
+      if (next && (/[a-zA-Z]/.test(next) || next === "/" || next === "!" || next === "?")) {
+        tag = "";
+      } else {
+        out += ch;
+      }
+    } else {
+      out += ch;
+    }
+  }
+
+  if (tag !== null) out += `<${tag}`;
+  return out;
+}
+
 /** HTML → 纯文本（保留段落 / 换行，不截断；与 Rust `html_to_text` 口径一致）。 */
 function htmlToText(raw) {
   if (!raw) return undefined;
-  const stripped = raw
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-3])>/gi, "\n\n")
-    .replace(/<[^>]*>/g, "");
-  const decoded = decodeXmlEntities(stripped).replace(/\r\n?/g, "\n");
+  const decoded = decodeXmlEntities(stripHtml(raw)).replace(/\r\n?/g, "\n");
   const text = decoded
     .split("\n")
     .map((line) => line.replace(/[ \t]+/g, " ").trim())

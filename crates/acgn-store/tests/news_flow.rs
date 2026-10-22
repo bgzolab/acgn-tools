@@ -205,6 +205,13 @@ async fn storing_news_is_idempotent_and_keeps_an_archive() {
     assert_eq!(first_page.items.len(), 1);
     assert_eq!(first_page.total_pages, 2);
     assert_eq!(first_page.items[0].title, "Patch 1.1 (hotfix)");
+
+    let last_page = db
+        .list_news("schinese", Some(id), i64::MAX, 1)
+        .await
+        .unwrap();
+    assert_eq!(last_page.page, 2, "超大页码应夹到真实总页数");
+    assert_eq!(last_page.items[0].title, "Patch 1.0");
 }
 
 #[tokio::test]
@@ -322,7 +329,7 @@ async fn huge_page_does_not_overflow() {
         .list_news("schinese", None, i64::MAX, 100)
         .await
         .expect("超大页码不应 panic / 溢出");
-    assert_eq!(page.page, 1_000_000, "页码应被夹到安全上限");
+    assert_eq!(page.page, 1, "没有数据时应回到第 1 页");
     assert_eq!(page.items.len(), 0);
 }
 

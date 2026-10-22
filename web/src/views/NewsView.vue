@@ -18,6 +18,7 @@ const page = ref<Page<GameNews> | null>(null);
 const syncState = ref<NewsSyncState | null>(null);
 const loading = ref(false);
 const error = ref("");
+const pollError = ref("");
 const perPage = 20;
 const currentPage = ref(1);
 const selected = ref<GameNews | null>(null);
@@ -136,8 +137,8 @@ async function pollSync(generation: number) {
     const next = await getNewsSyncStatus();
     // 请求挂起期间可能已开始新一轮 / 已离开页面：旧响应直接丢弃。
     if (disposed || generation !== syncGeneration) return;
-    // 轮询恢复后清掉上一次网络错误，避免错误横幅一直挂着。
-    error.value = "";
+    // 轮询恢复后只清轮询自己的错误，不覆盖列表加载错误。
+    pollError.value = "";
     const previousDone = syncState.value?.done ?? 0;
     syncState.value = next;
 
@@ -160,7 +161,7 @@ async function pollSync(generation: number) {
     if (disposed || generation !== syncGeneration) return;
     // 后端短暂不可达时继续轮询，恢复后进度会自己接上。
     const { title, message } = errorText(err);
-    error.value = `${title}：${message}`;
+    pollError.value = `${title}：${message}`;
     schedulePoll(generation, 1500);
   }
 }
@@ -170,6 +171,7 @@ async function startSync() {
   // 让任何挂起中的旧轮询失效，再开启新一轮。
   stopPolling();
   error.value = "";
+  pollError.value = "";
   starting.value = true;
   try {
     const initial = await startNewsSync();
@@ -242,6 +244,11 @@ onUnmounted(() => {
   <div v-if="error" class="banner danger" style="margin-bottom: 14px">
     <span>✕</span>
     <div>{{ error }}</div>
+  </div>
+
+  <div v-if="pollError" class="banner warn" style="margin-bottom: 14px">
+    <span>⚠</span>
+    <div>{{ pollError }}（正在自动重试）</div>
   </div>
 
   <div v-if="syncState?.running" class="panel sync-panel">

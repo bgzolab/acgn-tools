@@ -111,7 +111,9 @@ library entry has `source_playtime_minutes`. Wishlist-only entries are ignored.
 
 #### GET /api/news
 
-`page` (default 1), `per_page` (default 20, max 100) and optional `game_id`:
+`page` (default 1), `per_page` (default 20, max 100) and optional `game_id`. `page` is clamped
+to the last page after the count query, so an out-of-range page returns the final page instead
+of scanning a huge OFFSET.
 
 ```json
 {
@@ -232,7 +234,8 @@ both → `400 invalid`.
 ### GET /api/games
 
 `sort` accepts: `added_desc` (default), `added_asc`, `updated_desc`, `title`, `review_desc`,
-`rating_desc`, `priority`, `price_desc`, `playtime_desc`. `per_page` is clamped to 1..200.
+`rating_desc`, `priority`, `price_desc`, `playtime_desc`. `per_page` is clamped to 1..200 and
+`page` is clamped to the last page after the count query.
 The response is a page object: `{ items, total, page, per_page, total_pages }`.
 
 `account_id` restricts the list to games associated with that account (its wishlist **and** its
