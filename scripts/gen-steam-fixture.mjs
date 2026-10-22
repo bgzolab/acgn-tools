@@ -249,12 +249,48 @@ const HTML_ENTITIES = {
   diams: "♦",
 };
 
+const CP1252_ENTITIES = {
+  0x80: "€",
+  0x82: "‚",
+  0x83: "ƒ",
+  0x84: "„",
+  0x85: "…",
+  0x86: "†",
+  0x87: "‡",
+  0x88: "ˆ",
+  0x89: "‰",
+  0x8a: "Š",
+  0x8b: "‹",
+  0x8c: "Œ",
+  0x8e: "Ž",
+  0x91: "‘",
+  0x92: "’",
+  0x93: "“",
+  0x94: "”",
+  0x95: "•",
+  0x96: "–",
+  0x97: "—",
+  0x98: "˜",
+  0x99: "™",
+  0x9a: "š",
+  0x9b: "›",
+  0x9c: "œ",
+  0x9e: "ž",
+  0x9f: "Ÿ",
+};
+
+function numericEntity(code) {
+  if (code === 0 || (code >= 0xd800 && code <= 0xdfff) || code > 0x10ffff) return "\uFFFD";
+  if (code >= 0x80 && code <= 0x9f) return CP1252_ENTITIES[code] ?? "\uFFFD";
+  return String.fromCodePoint(code);
+}
+
 /** XML / HTML 实体 → 字符（只解一层，和 Rust 侧解析保持同一口径）。 */
 function decodeXmlEntities(value) {
   return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);/g, (raw, entity) => {
     const hex = entity.match(/^#x([0-9a-fA-F]+)$/);
-    if (hex) return String.fromCodePoint(Number.parseInt(hex[1], 16));
-    if (entity.startsWith("#")) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+    if (hex) return numericEntity(Number.parseInt(hex[1], 16));
+    if (entity.startsWith("#")) return numericEntity(Number.parseInt(entity.slice(1), 10));
     return HTML_ENTITIES[entity] ?? raw;
   });
 }

@@ -32,7 +32,24 @@ impl SteamClient {
     /// 永远把同步状态标记为失败。其它 4xx/5xx 交给上层记录并继续下一个游戏。
     pub async fn fetch_news(&self, appid: &str) -> Result<NewsFetch> {
         if let Some(fixture) = self.fixture() {
-            return fixture.news_for_app(appid);
+            let mut fetch = fixture.news_for_app(appid)?;
+            if let Some(language) = fixture.news_language.as_deref()
+                && !language.eq_ignore_ascii_case(&self.config().language)
+            {
+                fetch.warnings.push(format!(
+                    "fixture news.json 按 {language} 生成，当前 STEAM_LANGUAGE={}：内容语言可能不一致",
+                    self.config().language
+                ));
+            }
+            if let Some(country) = fixture.news_country.as_deref()
+                && !country.eq_ignore_ascii_case(&self.config().country)
+            {
+                fetch.warnings.push(format!(
+                    "fixture news.json 按 {country} 区域生成，当前 STEAM_COUNTRY={}：区域内容可能不一致",
+                    self.config().country
+                ));
+            }
+            return Ok(fetch);
         }
 
         let url = news_feed_url(appid, &self.config().country, &self.config().language);
@@ -288,7 +305,52 @@ fn parse_numeric_entity(entity: &str) -> Option<char> {
         .or_else(|| entity.strip_prefix("#X"))
         .and_then(|hex| u32::from_str_radix(hex, 16).ok())
         .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse().ok()))?;
-    char::from_u32(number)
+    numeric_char(number)
+}
+
+/// HTML 数字引用的收尾处理：
+/// * 0x80–0x9F 按 Windows-1252 解释（HTML5 规则）；
+/// * NUL / 代理区 / 越界值替换为 U+FFFD，避免把不可见控制字符写进正文。
+fn numeric_char(value: u32) -> Option<char> {
+    match value {
+        0 => Some('\u{fffd}'),
+        0x80..=0x9f => Some(cp1252_char(value).unwrap_or('\u{fffd}')),
+        0xd800..=0xdfff => Some('\u{fffd}'),
+        _ => char::from_u32(value).or(Some('\u{fffd}')),
+    }
+}
+
+fn cp1252_char(value: u32) -> Option<char> {
+    Some(match value {
+        0x80 => '€',
+        0x82 => '‚',
+        0x83 => 'ƒ',
+        0x84 => '„',
+        0x85 => '…',
+        0x86 => '†',
+        0x87 => '‡',
+        0x88 => 'ˆ',
+        0x89 => '‰',
+        0x8a => 'Š',
+        0x8b => '‹',
+        0x8c => 'Œ',
+        0x8e => 'Ž',
+        0x91 => '‘',
+        0x92 => '’',
+        0x93 => '“',
+        0x94 => '”',
+        0x95 => '•',
+        0x96 => '–',
+        0x97 => '—',
+        0x98 => '˜',
+        0x99 => '™',
+        0x9a => 'š',
+        0x9b => '›',
+        0x9c => 'œ',
+        0x9e => 'ž',
+        0x9f => 'Ÿ',
+        _ => return None,
+    })
 }
 
 /// HTML → 纯文本：块级标签保留换行，其余标签剥掉，再解码 HTML 实体。
@@ -538,6 +600,60 @@ mod tests {
             html_to_text("<p>One</p><p>Two</p>").as_deref(),
             Some("One\n\nTwo")
         );
+    }
+
+    #[test]
+    fn normalizes_windows_1252_and_nul_numeric_entities() {
+        assert_eq!(resolve_html_entity("#146"), Some('’'));
+        assert_eq!(resolve_html_entity("#153"), Some('™'));
+        assert_eq!(resolve_html_entity("#0"), Some('\u{fffd}'));
+        assert_eq!(resolve_html_entity("#x0"), Some('\u{fffd}'));
+        assert_eq!(resolve_html_entity("#xD800"), Some('\u{fffd}'));
+        assert_eq!(html_to_text("bad&#0;char").as_deref(), Some("bad�char"));
+    }
+
+    #[tokio::test]
+    async fn fixture_language_mismatch_warns() {
+        let dir =
+            std::env::temp_dir().join(format!("acgn-news-fixture-lang-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建临时 fixture 目录");
+        std::fs::write(
+            dir.join("wishlist.json"),
+            r#"{"steam_id":"76561198000000000","wishlist":{}}"#,
+        )
+        .expect("写 wishlist fixture");
+        std::fs::write(
+            dir.join("news.json"),
+            r#"{"language":"schinese","country":"cn","news":{"1":[]}}"#,
+        )
+        .expect("写 news fixture");
+
+        let client = SteamClient::new(crate::SteamConfig {
+            fixture: Some(dir.clone()),
+            language: "english".to_string(),
+            country: "us".to_string(),
+            ..Default::default()
+        })
+        .expect("客户端应能初始化");
+        let fetch = client.fetch_news("1").await.expect("fixture 新闻应可读");
+        assert!(
+            fetch
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("STEAM_LANGUAGE")),
+            "{:?}",
+            fetch.warnings
+        );
+        assert!(
+            fetch
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("STEAM_COUNTRY")),
+            "{:?}",
+            fetch.warnings
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

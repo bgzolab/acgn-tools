@@ -419,6 +419,8 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
 - Fixture mode reads `fixtures/steam/news.json` (`{ "news": { "<appid>": [NewsEntry…] } }`).
   Missing file → explicit error; appid missing from the file → empty feed with a warning. The
   fixture generator writes the latest five posts per appid from the live RSS, with full text.
+  The top-level `language` / `country` are compared with `STEAM_LANGUAGE` / `STEAM_COUNTRY`; a
+  mismatch produces a warning (the fixture content cannot be re-localized).
 - The data contract is [`NewsEntry`](../crates/acgn-core/src/dto.rs): a future Bangumi / Xiaoheihe
   news adapter can produce the same structure and reuse the storage and UI.
 

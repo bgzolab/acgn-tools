@@ -250,10 +250,6 @@ impl NewsListQuery {
     pub fn per_page(&self) -> i64 {
         self.per_page.unwrap_or(20).clamp(1, 100)
     }
-
-    pub fn offset(&self) -> i64 {
-        (self.page() - 1).saturating_mul(self.per_page())
-    }
 }
 
 /// 数据源产出的单条新闻（适配器 → 存储层的唯一契约）。
