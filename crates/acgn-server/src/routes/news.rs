@@ -233,7 +233,7 @@ async fn run_news_sync_inner(
 
 /// 是否是 Steam 的 429 限流：这类错误应该终止本轮，而不是把游戏记成失败。
 fn is_rate_limited(err: &Error) -> bool {
-    matches!(err, Error::RateLimited(_))
+    err.is_rate_limited()
 }
 
 /// 抓取 + 落库一个 feed；状态记账失败只记 warning，不影响新闻入库。

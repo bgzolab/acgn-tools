@@ -482,7 +482,7 @@ pub async fn sync_steam_achievements(
                     if failure_samples.len() < 5 {
                         failure_samples.push(format!("{}: {err}", entry.external_id));
                     }
-                    let rejected = matches!(err, Error::SourceRejected(_));
+                    let rejected = matches!(err, Error::SourceRejected(_) | Error::RateLimited(_));
                     last_error = Some(err);
                     if rejected {
                         warnings.push(

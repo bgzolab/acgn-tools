@@ -203,15 +203,15 @@ async function goPage(target: number) {
 
 onMounted(async () => {
   void meta.load();
+  const generation = ++syncGeneration;
   await load(1);
-  if (disposed) return;
-  stopPolling();
+  if (disposed || generation !== syncGeneration) return;
   try {
     const current = await getNewsSyncStatus();
-    if (disposed) return;
+    if (disposed || generation !== syncGeneration) return;
     syncState.value = current;
     if (current.running) {
-      schedulePoll(syncGeneration, 300);
+      schedulePoll(generation, 300);
     }
   } catch {
     // 进度接口不可用时不影响已有列表。
