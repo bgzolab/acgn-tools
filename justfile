@@ -42,6 +42,10 @@ fixture:
 fixture-library:
     node scripts/gen-steam-fixture.mjs --library-only
 
+# 只刷新新闻 fixture（联网；appid 来自现有 library/wishlist）
+fixture-news:
+    node scripts/gen-steam-fixture.mjs --news-only
+
 # 清空本地数据库（谨慎）
 reset:
     rm -f data/acgn.db data/acgn.db-shm data/acgn.db-wal

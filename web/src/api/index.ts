@@ -10,10 +10,14 @@ import type {
   Game,
   GameAccount,
   GameListParams,
+  GameNews,
   GameWithEntry,
   ImportResponse,
   ImportRun,
   LibraryEntry,
+  NewsListParams,
+  NewsStatus,
+  NewsSyncSummary,
   Page,
   PublicConfig,
   Stats,
@@ -29,6 +33,24 @@ export const getHealth = () =>
   );
 
 export const getStats = () => http.get<Stats>("/stats");
+
+// ------------------------------------------------------------------ 游戏新闻
+
+export function listNews(params: NewsListParams = {}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    query.set(key, String(value));
+  }
+  const suffix = query.toString();
+  return http.get<Page<GameNews>>(`/news${suffix ? `?${suffix}` : ""}`);
+}
+
+export const getNewsStatus = () => http.get<NewsStatus>("/news/status");
+
+/** 同步下一批已拥有游戏的新闻（默认 30 个；可只同步单个 game_id） */
+export const syncNews = (body: { limit?: number; game_id?: number } = {}) =>
+  http.post<NewsSyncSummary>("/news/sync", body);
 
 // ------------------------------------------------------------------ 数据源账号
 

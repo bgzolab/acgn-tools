@@ -14,7 +14,7 @@ pub struct SteamConfig {
     pub api_key: Option<String>,
     /// 商店国家（影响价格币种），默认 `cn`。
     pub country: String,
-    /// 商店语言，默认 `schinese`。
+    /// 商店 / 新闻 RSS 语言，默认 `schinese`。
     pub language: String,
     /// 离线 fixture 目录 / 文件；设置后完全不发网络请求。
     pub fixture: Option<PathBuf>,

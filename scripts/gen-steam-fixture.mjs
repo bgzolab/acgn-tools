@@ -12,6 +12,7 @@
  * 用法：
  *   node scripts/gen-steam-fixture.mjs                 # 生成到 fixtures/steam/
  *   node scripts/gen-steam-fixture.mjs --library-only  # 只用现有 wishlist.json 生成 library/achievements（不联网）
+ *   node scripts/gen-steam-fixture.mjs --news-only     # 只抓新闻 RSS（联网；appid 来自 library/wishlist）
  *   node scripts/gen-steam-fixture.mjs --out /tmp/steam
  *
  * 注意：除 `--library-only` 外脚本会真的访问 Steam，请确保网络通畅（国内需要走代理）。
@@ -61,6 +62,13 @@ const OUT_DIR =
 const LIBRARY_ONLY = args.includes("--library-only");
 /** 只写 profile.json：不联网，给账号演示补资料 */
 const PROFILE_ONLY = args.includes("--profile-only");
+/** 只抓新闻 RSS：联网；appid 来自现有 library.json（缺失时退回 wishlist.json） */
+const NEWS_ONLY = args.includes("--news-only");
+
+const NEWS_COUNTRY = "cn";
+const NEWS_LANGUAGE = "schinese";
+/** fixture 每个游戏保留最近几条新闻，避免样例文件过大 */
+const NEWS_PER_GAME = 5;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -194,6 +202,129 @@ async function writeLibraryFile(wishlist) {
   await writeProfileFile();
 }
 
+/** XML 实体 → 字符（只解一层，和 Rust 侧解析保持同一口径）。 */
+function decodeXmlEntities(value) {
+  return value.replace(/&(#x?[0-9a-fA-F]+|amp|lt|gt|quot|apos);/g, (raw, entity) => {
+    if (entity === "amp") return "&";
+    if (entity === "lt") return "<";
+    if (entity === "gt") return ">";
+    if (entity === "quot") return '"';
+    if (entity === "apos") return "'";
+    const hex = entity.match(/^#x([0-9a-fA-F]+)$/);
+    if (hex) return String.fromCodePoint(Number.parseInt(hex[1], 16));
+    if (entity.startsWith("#")) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
+    return raw;
+  });
+}
+
+/** 取一个简单标签的文本，支持 CDATA 与属性（如 `<guid isPermaLink="true">`）。 */
+function readTag(block, name) {
+  const match = block.match(
+    new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i"),
+  );
+  if (!match) return "";
+  return decodeXmlEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")).trim();
+}
+
+/** HTML → 纯文本（与 Rust `html_to_text` 保持相同的展示口径）。 */
+function htmlToText(raw) {
+  if (!raw) return undefined;
+  const stripped = raw
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-3])>/gi, "\n")
+    .replace(/<[^>]*>/g, "");
+  const text = decodeXmlEntities(stripped).replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 4000) : undefined;
+}
+
+/** 解析 Steam 公告 RSS：只保留最近 NEWS_PER_GAME 条，坏条目跳过。 */
+function parseNewsFeed(xml) {
+  const entries = [];
+  for (const match of xml.matchAll(/<item>([\s\S]*?)<\/item>/gi)) {
+    const block = match[1];
+    const title = readTag(block, "title");
+    const link = readTag(block, "link");
+    const guid = readTag(block, "guid") || link;
+    const pubDate = new Date(readTag(block, "pubDate"));
+    if (!title || !link || !guid || Number.isNaN(pubDate.getTime())) continue;
+
+    const author = readTag(block, "author");
+    entries.push({
+      guid,
+      title,
+      summary: htmlToText(readTag(block, "description")),
+      url: link,
+      author: author || undefined,
+      published_at: pubDate.toISOString(),
+    });
+    if (entries.length >= NEWS_PER_GAME) break;
+  }
+  return entries;
+}
+
+async function getText(url, attempt = 1) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        accept: "application/rss+xml, application/xml, text/xml",
+        "accept-language": NEWS_LANGUAGE,
+        "user-agent": "acgn-tools fixture generator",
+      },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
+  } catch (error) {
+    if (attempt >= 3) throw error;
+    await sleep(1000 * attempt);
+    return getText(url, attempt + 1);
+  }
+}
+
+/** 抓取已拥有游戏的新闻 RSS，写成 news.json（每个 appid 最近几条）。 */
+async function writeNewsFile(appids) {
+  const news = {};
+  let ok = 0;
+  let failed = 0;
+
+  for (const appid of appids) {
+    try {
+      const url =
+        `https://steamcommunity.com/games/${appid}/rss/` +
+        `?cc=${NEWS_COUNTRY}&l=${NEWS_LANGUAGE}`;
+      const entries = parseNewsFeed(await getText(url));
+      if (entries.length) {
+        news[String(appid)] = entries;
+        ok += 1;
+        console.log(`  ✓ news ${appid}: ${entries.length} 条`);
+      } else {
+        console.log(`  · news ${appid}: 没有公告`);
+      }
+    } catch (error) {
+      failed += 1;
+      console.warn(`  ✗ news ${appid}: ${error.message}`);
+    }
+    await sleep(250);
+  }
+
+  if (ok === 0) {
+    throw new Error(`没有抓到任何新闻（失败 ${failed}），不覆盖已有 news.json`);
+  }
+
+  const file = {
+    note: "样例数据：游戏公告来自 Steam Community RSS，由 scripts/gen-steam-fixture.mjs 生成（演示用）",
+    country: NEWS_COUNTRY,
+    language: NEWS_LANGUAGE,
+    fetched_at: new Date().toISOString(),
+    news,
+  };
+  await writeFile(
+    path.join(OUT_DIR, "news.json"),
+    `${JSON.stringify(file, null, 2)}\n`,
+    "utf8",
+  );
+  console.log(`✔ news.json：${ok} 个游戏有新闻，失败 ${failed}`);
+}
+
 async function getJson(url, attempt = 1) {
   try {
     const response = await fetch(url, {
@@ -237,6 +368,25 @@ async function appDetails(appid, language) {
   return entry;
 }
 
+/** 现有 fixture 里的 appid 列表（library 优先，缺失时用 wishlist）。 */
+async function readExistingAppids() {
+  try {
+    const library = JSON.parse(
+      await readFile(path.join(OUT_DIR, "library.json"), "utf8"),
+    );
+    const games = library.response?.games ?? library.games ?? library.library ?? library.items ?? [];
+    const appids = games.map((game) => game.appid).filter(Boolean);
+    if (appids.length) return [...new Set(appids.map(String))];
+  } catch {
+    // library.json 不存在：继续尝试 wishlist.json
+  }
+
+  const wishlist = JSON.parse(
+    await readFile(path.join(OUT_DIR, "wishlist.json"), "utf8"),
+  );
+  return Object.keys(wishlist.wishlist ?? wishlist);
+}
+
 async function main() {
   console.log(`→ 目标目录 ${OUT_DIR}`);
   await mkdir(OUT_DIR, { recursive: true });
@@ -252,6 +402,16 @@ async function main() {
     const raw = await readFile(path.join(OUT_DIR, "wishlist.json"), "utf8");
     const parsed = JSON.parse(raw);
     await writeLibraryFile(parsed.wishlist ?? parsed);
+    return;
+  }
+
+  // 联网：只刷新新闻。优先用已拥有的 library.json，缺失时退回 wishlist。
+  if (NEWS_ONLY) {
+    const appids = await readExistingAppids();
+    if (appids.length === 0) {
+      throw new Error("library.json / wishlist.json 里没有 appid，无法生成新闻 fixture");
+    }
+    await writeNewsFile(appids);
     return;
   }
 
@@ -328,6 +488,12 @@ async function main() {
     "utf8",
   );
   await writeLibraryFile(wishlist);
+  try {
+    await writeNewsFile(Object.keys(wishlist));
+  } catch (error) {
+    // 新闻是附加样例：RSS 全都失败时保留旧 news.json，不让整次 fixture 生成失败
+    console.warn(`⚠ news.json 未更新：${error.message}`);
+  }
 
   console.log(`✔ 完成：${index} 条愿望单 / ${Object.keys(appdetails).length} 条详情，失败 ${failures}`);
 }

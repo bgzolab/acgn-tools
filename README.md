@@ -30,6 +30,9 @@ library, enrich it with store metadata, and keep track of what you actually play
   network errors; a failure in one step does not abort the others
 - **Achievement check** — per-game achievement progress; a game with all achievements is
   marked *completed* automatically, while a status you set yourself is never reverted
+- **Game news** — Steam announcements for your **owned** games, aggregated newest-first with
+  cover, summary and a link to the original post. News is synced in batches and archived
+  locally, so browsing never waits on dozens of RSS requests
 - **Metadata enrichment** — description, developer, publisher, genres, platforms, price,
   discount, release date and the vertical library poster, fetched on demand
 - **Personal tracking** — status (wishlist / backlog / playing / completed / on hold /
@@ -70,6 +73,8 @@ library, enrich it with store metadata, and keep track of what you actually play
 - Items that disappear from a source are only reported (`missing`), never deleted; the report
   repeats on later syncs while the item stays gone. Re-importing unchanged data reports
   `unchanged` and writes nothing.
+- News is an **archive**, not a mirror: a feed returning only its latest posts never deletes
+  older announcements from the local database. Deleting a game does remove its news (cascade).
 
 ## Quick start
 
@@ -87,6 +92,8 @@ cd web && pnpm install && pnpm dev     # → http://127.0.0.1:5173
 Open the app, switch to **Import & Sync**, add your SteamID64 (or vanity URL) as an account,
 then sync its wishlist or library from the account card. Library sync additionally needs a
 Steam Web API key (`STEAM_API_KEY`, see below) and a public "Game details" privacy setting.
+After the library is in, open **Game News** and click **Sync News** to fetch announcements for
+the owned games in batches (already-synced games rotate to the back of the queue).
 
 Want to look around without touching the network first?
 
@@ -117,7 +124,7 @@ the working directory on every start (explicit environment variables win over it
 | `ACGN_LOG` | `info,…` | `tracing` filter directives |
 | `ACGN_STEAM_FIXTURE` | unset | Point at `fixtures/steam` to run fully offline |
 | `STEAM_API_KEY` | unset | Optional for the wishlist (the official wishlist API works anonymously); **required for the library sync** — Steam's `GetOwnedGames` refuses anonymous calls |
-| `STEAM_COUNTRY` / `STEAM_LANGUAGE` | `cn` / `schinese` | Store country and language (prices, titles, descriptions) |
+| `STEAM_COUNTRY` / `STEAM_LANGUAGE` | `cn` / `schinese` | Store country and language (prices, titles, descriptions, and the game-news RSS language) |
 | `STEAM_ENRICH_CONCURRENCY` / `STEAM_ENRICH_DELAY_MS` | `1` / `1500` | Metadata enrichment rate (≈0.67 req/s by default, matching Steam's `appdetails` budget) |
 
 > Steam store and API endpoints are unreachable from mainland China without a proxy. If
@@ -152,6 +159,7 @@ itself. [`AGENTS.md`](AGENTS.md) lists every command and convention.
 - [x] Domain model, SQLite storage and import merge semantics
 - [x] Steam wishlist + library (owned games with playtime) import, metadata enrichment, dashboard, import history
 - [x] Multiple Steam accounts: profiles, account-scoped sync/missing, account filter and per-region prices
+- [x] Game news: owned-game Steam announcements, archived locally and synced in batches
 - [ ] Price history and discount alerts
 - [ ] Bangumi integration (anime / comic / novel, two-way progress sync)
 - [ ] Xiaoheihe (小黑盒) — no public API; needs research or a manual import path

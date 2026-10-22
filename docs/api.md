@@ -44,6 +44,9 @@ Metadata follows the source; personal state follows the local database — see
 | GET | `/api/health` | Liveness probe, version, uptime, data-source mode |
 | GET | `/api/config` | Frontend config: status list, Steam mode, country/language |
 | GET | `/api/stats` | Dashboard aggregates |
+| GET | `/api/news` | Game news across owned Steam games, newest first (`page`, `per_page`, `game_id`) |
+| GET | `/api/news/status` | News-source coverage: owned / synced / pending / failed / item counts |
+| POST | `/api/news/sync` | Fetch the next batch of Steam announcement RSS feeds (`limit`, `game_id`) |
 | GET | `/api/accounts` | Source accounts with owned / wishlist counts |
 | POST | `/api/accounts/resolve` | Add an account: resolve steamID / vanity / profile link, fetch its profile (idempotent) |
 | PATCH | `/api/accounts/{id}` | Set or clear the account's regional price override |
@@ -96,6 +99,100 @@ and any warnings:
 takes `country_code` (two letters, e.g. `us`; empty string clears the override and follows the
 profile); changing the effective region clears that account's cached prices. `DELETE` returns
 `204`, removes only `game_accounts` rows, and keeps the games / personal state.
+
+### Game news
+
+News is collected from Steam's per-appid announcement RSS and archived locally. Only **owned**
+games are polled: a game counts as owned when an account link has
+`source_playtime_minutes` (0 included), or for legacy rows without account links, when the
+library entry has `source_playtime_minutes`. Wishlist-only entries are ignored.
+
+#### GET /api/news
+
+`page` (default 1), `per_page` (default 20, max 100) and optional `game_id`:
+
+```json
+{
+  "items": [
+    {
+      "id": 7,
+      "game_id": 12,
+      "source": "steam",
+      "external_id": "1245620",
+      "game_title": "ELDEN RING",
+      "game_title_zh": "艾尔登法环",
+      "game_cover_url": "…",
+      "game_poster_url": "…",
+      "language": "schinese",
+      "title": "Patch notes",
+      "summary": "Plain-text summary (HTML stripped by the adapter)",
+      "url": "https://steamcommunity.com/games/1245620/announcements/detail/…",
+      "author": "steam",
+      "published_at": "2026-10-20T12:00:00Z",
+      "fetched_at": "2026-10-22T07:00:00Z"
+    }
+  ],
+  "total": 1, "page": 1, "per_page": 20, "total_pages": 1
+}
+```
+
+Results are ordered by `published_at DESC` (ties by id). The page reads SQLite only; it never
+performs RSS requests.
+
+#### GET /api/news/status
+
+```json
+{
+  "language": "schinese",
+  "owned_games": 42,
+  "synced_games": 30,
+  "pending_games": 12,
+  "failed_games": 1,
+  "news_items": 315,
+  "last_synced_at": "2026-10-22T07:00:00Z"
+}
+```
+
+`pending_games` = owned − ever-succeeded. `failed_games` counts feeds whose most recent attempt
+failed; they keep their previously archived news and are retried on the next sync.
+
+#### POST /api/news/sync
+
+```json
+{ "limit": 30, "game_id": null }
+```
+
+- `limit` defaults to 30, clamped to 1..200. Each request processes one batch; the queue order is
+  "never attempted → last attempt failed → longest since last fetch", so repeated calls cover the
+  library and then rotate.
+- `game_id` restricts the batch to one owned game (a manual refresh / retry for a single feed).
+  A game that is not owned → `400 invalid`.
+- A missing / delisted feed (HTTP 404) is treated as an empty feed. Other per-game failures are
+  reported in `warnings` / `games_failed` without failing the whole request. Three consecutive
+  failures stop the batch early.
+- Response:
+
+```json
+{
+  "run_id": 18,
+  "games_checked": 30,
+  "games_failed": 1,
+  "items_added": 12,
+  "items_updated": 2,
+  "items_unchanged": 88,
+  "pending_games": 12,
+  "source_mode": "live",
+  "duration_ms": 9400,
+  "warnings": ["…"]
+}
+```
+
+- a `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
+  `unchanged` = news rows, `skipped` = failed feeds). If every attempted feed fails the run is
+  marked `failed`; with no owned games the response has `run_id: 0` and a warning.
+- RSS request language / region follow `STEAM_LANGUAGE` / `STEAM_COUNTRY` (default
+  `schinese` / `cn`). The language is part of the archive key, so changing it hides the previous
+  language's rows instead of deleting them.
 
 ### Steam imports are per account
 

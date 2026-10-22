@@ -659,6 +659,88 @@ p {
   text-decoration: line-through;
 }
 
+/* ------------------------------------------------------------------ 游戏新闻 */
+
+.news-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.news-card {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.news-card:hover {
+  border-color: rgba(124, 140, 255, 0.4);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.news-cover {
+  width: 84px;
+  aspect-ratio: 2 / 3;
+  align-self: start;
+}
+
+.news-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.news-meta {
+  row-gap: 4px;
+}
+
+.news-meta .badge {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.news-title {
+  font-size: 15px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.news-title a {
+  color: var(--text);
+}
+
+.news-title a:hover {
+  color: var(--accent);
+}
+
+.news-summary {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (max-width: 640px) {
+  .news-card {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .news-cover {
+    width: 64px;
+  }
+}
+
 /* ------------------------------------------------------------------ 抽屉 */
 
 .drawer-mask {

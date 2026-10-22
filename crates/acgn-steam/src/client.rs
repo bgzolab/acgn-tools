@@ -106,7 +106,7 @@ fn fallback_candidates<V>(
 
 /// 上游状态码 → 领域错误：5xx 是上游故障（502 upstream），
 /// 其余非成功状态按来源拒绝（422）处理——别把 Steam 宕机误导成「隐私设置问题」。
-fn http_error_for(endpoint: &str, status: reqwest::StatusCode) -> Error {
+pub(crate) fn http_error_for(endpoint: &str, status: reqwest::StatusCode) -> Error {
     if status.is_server_error() {
         Error::upstream(format!("{endpoint} 返回 HTTP {status}"))
     } else {
@@ -231,7 +231,7 @@ impl SteamClient {
     /// 代理 / VPN 切换或连接池里的旧 keep-alive 会让单次请求报 `error sending request`，
     /// 重试一次通常即可恢复；超时不重试（等两遍只会更久）。HTTP 4xx/5xx 不在这里处理，
     /// 由调用方按语义分类（限流 / 隐私 / 下架）。
-    async fn get(&self, url: &str, accept: &str) -> Result<reqwest::Response> {
+    pub(crate) async fn get(&self, url: &str, accept: &str) -> Result<reqwest::Response> {
         let mut attempts = 0u32;
         loop {
             attempts += 1;

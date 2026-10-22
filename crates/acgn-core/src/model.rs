@@ -476,6 +476,32 @@ impl GameAccount {
     }
 }
 
+/// 一条游戏新闻（来源公告 RSS 的规范化结果）。
+///
+/// 新闻按 `(game, language, guid)` 唯一；同一份公告换了语言会作为另一条记录保存，
+/// 展示层按配置语言过滤。`guid` 是来源侧稳定 ID（Steam 公告通常是详情页 URL）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameNews {
+    pub id: i64,
+    pub game_id: i64,
+    pub source: Source,
+    /// 来源侧 ID（Steam 是 appid）
+    pub external_id: String,
+    pub game_title: String,
+    pub game_title_zh: Option<String>,
+    pub game_cover_url: Option<String>,
+    pub game_poster_url: Option<String>,
+    pub language: String,
+    pub title: String,
+    /// 公告正文的纯文本摘要（HTML 已在适配器里剥离）
+    pub summary: Option<String>,
+    pub url: String,
+    pub author: Option<String>,
+    pub published_at: DateTime<Utc>,
+    /// 首次抓取到这条新闻的时间
+    pub fetched_at: DateTime<Utc>,
+}
+
 /// 一次导入 / 同步的运行记录。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportRun {
