@@ -298,18 +298,15 @@ onUnmounted(() => {
       <div class="spacer" />
       <button class="btn sm" @click="startSync">重试</button>
     </div>
-
-    <div
-      v-if="syncState?.warnings?.length"
-      class="banner warn"
-      style="margin-bottom: 14px"
-    >
-      <span>⚠</span>
-      <div>
-        <div v-for="warning in syncState.warnings.slice(0, 5)" :key="warning">{{ warning }}</div>
-      </div>
-    </div>
   </template>
+
+  <div v-if="syncState?.warnings?.length" class="banner warn" style="margin-bottom: 14px">
+    <span>⚠</span>
+    <div>
+      <div class="hint" style="margin-bottom: 2px">本轮同步告警</div>
+      <div v-for="warning in syncState.warnings.slice(0, 5)" :key="warning">{{ warning }}</div>
+    </div>
+  </div>
 
   <div v-if="loading && !items.length" class="panel">正在读取新闻…</div>
 
