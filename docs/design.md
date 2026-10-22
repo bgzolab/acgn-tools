@@ -401,8 +401,9 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
   retrying forever; other failures are recorded in `news_feeds.last_error` and the old news
   stays visible. Three consecutive failures stop the pass so a dead proxy does not wait for
   every game's timeout; the remaining feeds are picked up on the next run. An `Error::RateLimited`
-  (HTTP 429) stops the pass immediately **without** marking that feed failed, so it is not
-  hammered again in the same rate-limit window.
+  (HTTP 429) stops the pass immediately **without** marking that feed failed, but counts it as
+  done / skipped so progress and run counts still add up; it is not hammered again in the same
+  rate-limit window.
 - **The progress state always converges.** The background loop is wrapped against task panics:
   `news_sync.running` is cleared and the `steam_news` run is marked failed even if the loop
   panics. On startup, any `steam_news` run left in `running` by a previous process is marked

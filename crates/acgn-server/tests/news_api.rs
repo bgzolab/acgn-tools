@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use acgn_core::{AccountProfile, ImportOptions, Source, SourceItem, Status};
+use acgn_core::{AccountProfile, ImportOptions, NewsEntry, Source, SourceItem, Status};
 use acgn_server::config::AppConfig;
 use acgn_server::routes::build_app;
 use acgn_server::state::AppState;
@@ -14,7 +14,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-fn fixture_dir(tag: &str) -> PathBuf {
+fn fixture_dir(tag: &str, with_news: bool) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("acgn-news-api-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("创建临时 fixture 目录");
     std::fs::write(
@@ -22,41 +22,43 @@ fn fixture_dir(tag: &str) -> PathBuf {
         r#"{"steam_id":"76561198000000000","wishlist":{}}"#,
     )
     .expect("写 wishlist fixture");
-    std::fs::write(
-        dir.join("news.json"),
-        r#"{
-            "note": "测试新闻",
-            "news": {
-                "100": [
-                    {
-                        "guid": "https://steamcommunity.com/games/100/announcements/detail/2",
-                        "title": "Newer patch",
-                        "summary": "Second announcement",
-                        "url": "https://steamcommunity.com/games/100/announcements/detail/2",
-                        "author": "dev",
-                        "published_at": "2026-10-20T12:00:00Z"
-                    },
-                    {
-                        "guid": "https://steamcommunity.com/games/100/announcements/detail/1",
-                        "title": "Older patch",
-                        "summary": "First announcement",
-                        "url": "https://steamcommunity.com/games/100/announcements/detail/1",
-                        "author": "dev",
-                        "published_at": "2026-10-01T12:00:00Z"
-                    }
-                ]
-            }
-        }"#,
-    )
-    .expect("写 news fixture");
+    if with_news {
+        std::fs::write(
+            dir.join("news.json"),
+            r#"{
+                "note": "测试新闻",
+                "news": {
+                    "100": [
+                        {
+                            "guid": "https://steamcommunity.com/games/100/announcements/detail/2",
+                            "title": "Newer patch",
+                            "summary": "Second announcement",
+                            "url": "https://steamcommunity.com/games/100/announcements/detail/2",
+                            "author": "dev",
+                            "published_at": "2026-10-20T12:00:00Z"
+                        },
+                        {
+                            "guid": "https://steamcommunity.com/games/100/announcements/detail/1",
+                            "title": "Older patch",
+                            "summary": "First announcement",
+                            "url": "https://steamcommunity.com/games/100/announcements/detail/1",
+                            "author": "dev",
+                            "published_at": "2026-10-01T12:00:00Z"
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("写 news fixture");
+    }
     dir
 }
 
-async fn test_app(tag: &str) -> (Router, Db, AppState) {
+async fn test_app(tag: &str, with_news: bool) -> (Router, Db, AppState) {
     let db = Db::memory().await.expect("内存库应能创建");
     db.migrate().await.expect("迁移应成功");
 
-    let fixture = fixture_dir(tag);
+    let fixture = fixture_dir(tag, with_news);
     let steam_config = SteamConfig {
         fixture: Some(fixture),
         ..Default::default()
@@ -192,7 +194,7 @@ async fn wait_for_sync(app: &Router) -> Value {
 
 #[tokio::test]
 async fn sync_and_list_news_for_owned_games_only() {
-    let (app, db, _state) = test_app("flow").await;
+    let (app, db, _state) = test_app("flow", true).await;
     let (_, owned, _) = seed(&db).await;
 
     let (status, body) = send(&app, get("/api/news")).await;
@@ -263,7 +265,7 @@ async fn sync_and_list_news_for_owned_games_only() {
 
 #[tokio::test]
 async fn start_while_running_returns_snapshot_without_new_run() {
-    let (app, db, state) = test_app("duplicate").await;
+    let (app, db, state) = test_app("duplicate", true).await;
     seed(&db).await;
 
     // 模拟已经在跑的一轮（total=7）；POST 不应再启动一轮、也不应写新的运行记录。
@@ -290,8 +292,74 @@ async fn start_while_running_returns_snapshot_without_new_run() {
 }
 
 #[tokio::test]
+async fn missing_news_fixture_marks_feed_failed_and_keeps_archive() {
+    let (app, db, _state) = test_app("missing-news", false).await;
+    let (_, owned, _) = seed(&db).await;
+
+    // 先放一条已归档新闻：同步失败不应影响它。
+    db.store_news(
+        owned,
+        "schinese",
+        &[NewsEntry {
+            guid: "https://example.com/news/1".to_string(),
+            title: "Archived".to_string(),
+            summary: Some("still here".to_string()),
+            url: "https://example.com/news/1".to_string(),
+            author: None,
+            published_at: chrono::Utc::now(),
+        }],
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("预置新闻应成功");
+
+    let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["running"], true);
+    assert_eq!(body["total"], 1);
+
+    let body = wait_for_sync(&app).await;
+    assert_eq!(body["done"], 1);
+    assert_eq!(body["succeeded"], 0);
+    assert_eq!(body["failed"], 1);
+    assert!(
+        body["warnings"][0]
+            .as_str()
+            .is_some_and(|warning| warning.contains("news.json")),
+        "{body}"
+    );
+
+    // 失败的 feed 不删除已有归档。
+    let (status, list) = send(&app, get("/api/news")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["total"], 1);
+    assert_eq!(list["items"][0]["title"], "Archived");
+
+    // 全失败：运行记录必须是 failed，且保留 seen / skipped 计数。
+    let (status, runs) = send(&app, get("/api/imports?limit=1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(runs[0]["mode"], "steam_news");
+    assert_eq!(runs[0]["status"], "failed");
+    assert_eq!(runs[0]["seen"], 1);
+    assert_eq!(runs[0]["skipped"], 1);
+    assert!(
+        runs[0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("news.json")),
+        "{runs}"
+    );
+
+    let (status, coverage) = send(&app, get("/api/news/status")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(coverage["synced_games"], 0);
+    assert_eq!(coverage["pending_games"], 1);
+    assert_eq!(coverage["failed_games"], 1);
+    assert_eq!(coverage["news_items"], 1);
+}
+
+#[tokio::test]
 async fn sync_without_owned_games_reports_a_warning() {
-    let (app, _db, _state) = test_app("empty").await;
+    let (app, _db, _state) = test_app("empty", true).await;
     let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["running"], false);

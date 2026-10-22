@@ -105,6 +105,13 @@ impl NewsSyncManager {
         state.current_game = None;
     }
 
+    /// 已尝试但因上游限流中止：计入 done（进度不会永远差 1），但不记为失败。
+    pub fn record_skipped(&self) {
+        let mut state = self.lock();
+        state.done += 1;
+        state.current_game = None;
+    }
+
     pub fn push_warning(&self, warning: String) {
         let mut state = self.lock();
         if state.warnings.len() < 12 {
@@ -190,5 +197,15 @@ mod tests {
         assert!(state.running, "运行中的同步不能被并发请求清零");
         assert_eq!((state.total, state.done, state.succeeded), (5, 1, 1));
         assert!(state.warnings.is_empty());
+    }
+
+    #[test]
+    fn skipped_progress_does_not_count_as_failed() {
+        let manager = NewsSyncManager::default();
+        assert!(manager.start(2));
+        manager.record_skipped();
+        let state = manager.snapshot();
+        assert_eq!((state.done, state.succeeded, state.failed), (1, 0, 0));
+        manager.finish();
     }
 }

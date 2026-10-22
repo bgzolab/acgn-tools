@@ -165,9 +165,11 @@ async fn run_news_sync_inner(
             Err(err) if is_rate_limited(&err) => {
                 // 429 不记为该游戏的失败：它的上次成功状态/旧新闻保持不变，
                 // 下次同步会按原优先级重试；本轮立刻停下，不再打满剩余请求。
+                // 但它确实被尝试过，计入 done，进度条不会永远停在 total - 1。
                 let warning = format!("{}: {err}，已停止本轮", target.title);
                 push_warning(&mut warnings, warning.clone());
                 state.news_sync.push_warning(warning);
+                state.news_sync.record_skipped();
                 aborted = Some(err.to_string());
                 break;
             }
@@ -198,12 +200,14 @@ async fn run_news_sync_inner(
 
     let duration_ms = started.elapsed().as_millis() as i64;
     let snapshot = state.news_sync.snapshot();
+    let aborted_count = if aborted.is_some() { 1 } else { 0 };
     let counts = RunCounts {
         seen: snapshot.done,
         added: snapshot.items_added,
         updated: snapshot.items_updated,
         unchanged: snapshot.items_unchanged,
-        skipped: snapshot.failed,
+        // 429 中止的 feed 也算 skipped（尝试过但未完成），但不进 failed / last_error。
+        skipped: snapshot.failed + aborted_count,
         missing: 0,
     };
 
@@ -211,7 +215,13 @@ async fn run_news_sync_inner(
         let reason = aborted
             .or(first_error)
             .unwrap_or_else(|| "所有新闻源请求失败".to_string());
-        finish_run_err_best_effort(state, run_id, &reason, duration_ms).await;
+        if let Err(err) = state
+            .db
+            .finish_run_err_with_counts(run_id, counts, &reason, duration_ms)
+            .await
+        {
+            warn!(run_id, error = %err, "写入失败记录时又出错了");
+        }
     } else if let Err(err) = state
         .db
         .finish_run_ok(run_id, counts, &warnings, duration_ms)

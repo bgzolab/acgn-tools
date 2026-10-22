@@ -193,7 +193,8 @@ shows new items while the pass is running. `done` counts finished feeds (success
   (Portal, Portal 2, …), is treated as an empty feed. Other per-game failures are reported in
   `warnings` / `failed` without failing the whole pass. Three consecutive failures stop the pass
   early; the remaining feeds are picked up on the next run. HTTP 429 stops the pass immediately
-  without marking that feed failed.
+  without marking that feed failed; it is counted as done / skipped so progress and run counts
+  still add up.
 - The full announcement text is stored (HTML stripped, paragraph breaks preserved) — the API does
   not truncate `summary`. The web UI shows an excerpt in the list and the full text in a modal.
 - A `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
