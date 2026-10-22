@@ -44,7 +44,7 @@ impl SteamClient {
         if status.as_u16() == 404 {
             return Ok(NewsFetch {
                 entries: Vec::new(),
-                warnings: vec![format!("{appid}: 没有新闻页（404），按空 feed 处理")],
+                warnings: vec!["没有新闻页（404），按空 feed 处理".to_string()],
                 source_mode: "live",
             });
         }
@@ -64,6 +64,21 @@ impl SteamClient {
                 "Steam 新闻 RSS 被重定向到 {}，请检查代理或稍后再试",
                 response.url().path()
             )));
+        }
+
+        // 少数游戏（例如 Portal 系列）没有社区公告页：路径仍是 /rss/，但返回的是
+        // Steam 的 HTML 页面而不是 RSS。按空 feed 处理，避免这些条目永远显示失败。
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        if content_type.to_ascii_lowercase().contains("text/html") {
+            return Ok(NewsFetch {
+                entries: Vec::new(),
+                warnings: vec!["没有可用的新闻 RSS（返回 HTML），按空 feed 处理".to_string()],
+                source_mode: "live",
+            });
         }
 
         let body = response.text().await.net()?;
@@ -283,11 +298,13 @@ fn html_to_text(raw: &str) -> Option<String> {
                     .next()
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                if matches!(
-                    name.as_str(),
-                    "br" | "p" | "div" | "li" | "tr" | "h1" | "h2" | "h3"
-                ) {
+                if name == "br" {
                     out.push('\n');
+                } else if matches!(
+                    name.as_str(),
+                    "p" | "div" | "li" | "tr" | "h1" | "h2" | "h3"
+                ) {
+                    out.push_str("\n\n");
                 }
                 tag = None;
             } else {
@@ -318,11 +335,36 @@ fn html_to_text(raw: &str) -> Option<String> {
     }
 
     let decoded = decode_html_entities(&out);
-    let text = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = normalize_news_text(&decoded);
     if text.is_empty() {
         return None;
     }
-    Some(text.chars().take(4000).collect())
+    Some(text)
+}
+
+/// 保留段落 / 换行，压缩行内空白；不截断正文（全文在弹窗里展示）。
+fn normalize_news_text(raw: &str) -> String {
+    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let mut result = String::with_capacity(normalized.len());
+    let mut blank_run = 0;
+
+    for raw_line in normalized.split('\n') {
+        let line = raw_line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            blank_run += 1;
+            continue;
+        }
+        if !result.is_empty() {
+            // 空行 = 段落间距（两个换行）；普通换行保留一个。
+            for _ in 0..if blank_run > 0 { 2 } else { 1 } {
+                result.push('\n');
+            }
+        }
+        result.push_str(&line);
+        blank_run = 0;
+    }
+
+    result.trim().to_string()
 }
 
 fn decode_html_entities(input: &str) -> String {
@@ -413,7 +455,7 @@ mod tests {
         assert_eq!(entries[0].title, "Update & News");
         assert_eq!(
             entries[0].summary.as_deref(),
-            Some("Big patch Line two & more")
+            Some("Big patch\n\nLine two & more")
         );
         assert_eq!(entries[0].author.as_deref(), Some("steam"));
         assert_eq!(
@@ -456,8 +498,15 @@ mod tests {
         );
         assert_eq!(
             html_to_text("<p>One</p><p>Two</p>").as_deref(),
-            Some("One Two")
+            Some("One\n\nTwo")
         );
+    }
+
+    #[test]
+    fn does_not_truncate_long_summaries() {
+        let long = "正文".repeat(3000);
+        let text = html_to_text(&long).expect("长文应保留");
+        assert_eq!(text, long, "新闻正文不能在解析阶段被截断");
     }
 
     #[test]

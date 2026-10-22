@@ -1,4 +1,4 @@
-//! 游戏新闻接口契约：列表 / 覆盖率 / 分批同步（fixture，不联网）。
+//! 游戏新闻接口契约：列表 / 覆盖率 / 后台全量同步（fixture，不联网）。
 
 use std::path::PathBuf;
 
@@ -177,27 +177,40 @@ async fn seed(db: &Db) -> (i64, i64, i64) {
     (account_id, owned, wishlist)
 }
 
+async fn wait_for_sync(app: &Router) -> Value {
+    for _ in 0..300 {
+        let (status, body) = send(app, get("/api/news/sync/status")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if body["running"] == false && body["started_at"].is_string() {
+            return body;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("新闻同步任务在 3 秒内没有结束");
+}
+
 #[tokio::test]
 async fn sync_and_list_news_for_owned_games_only() {
     let (app, db) = test_app("flow").await;
-    let (_, owned, wishlist) = seed(&db).await;
+    let (_, owned, _) = seed(&db).await;
 
     let (status, body) = send(&app, get("/api/news")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["total"], 0);
 
-    let (status, body) = send(
-        &app,
-        json_request("POST", "/api/news/sync", &json!({ "limit": 10 })),
-    )
-    .await;
+    let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["games_checked"], 1, "愿望单游戏不应被抓取：{body}");
-    assert_eq!(body["games_failed"], 0);
+    assert_eq!(body["running"], true);
+    assert_eq!(body["total"], 1, "愿望单游戏不应被抓取：{body}");
+    assert_eq!(body["done"], 0);
+
+    let body = wait_for_sync(&app).await;
+    assert_eq!(body["done"], 1);
+    assert_eq!(body["succeeded"], 1);
+    assert_eq!(body["failed"], 0);
     assert_eq!(body["items_added"], 2);
-    assert_eq!(body["pending_games"], 0);
-    assert_eq!(body["source_mode"], "fixture");
-    assert!(body["run_id"].as_i64().unwrap() > 0);
+    assert!(body["finished_at"].is_string());
+    assert!(body["eta_seconds"].is_null(), "结束后不再估算 ETA");
 
     let (status, body) = send(&app, get("/api/news")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -232,6 +245,7 @@ async fn sync_and_list_news_for_owned_games_only() {
     // 再同步一次：同一份 fixture 必须 unchanged，不重复插入
     let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let body = wait_for_sync(&app).await;
     assert_eq!(body["items_added"], 0);
     assert_eq!(body["items_unchanged"], 2);
 
@@ -244,15 +258,6 @@ async fn sync_and_list_news_for_owned_games_only() {
     assert_eq!(body[0]["mode"], "steam_news");
     assert_eq!(body[0]["seen"], 1);
     assert_eq!(body[0]["unchanged"], 2);
-
-    // 同步单个游戏：不在已拥有库里的条目应返回统一错误包络
-    let (status, body) = send(
-        &app,
-        json_request("POST", "/api/news/sync", &json!({ "game_id": wishlist })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"]["kind"], "invalid");
 }
 
 #[tokio::test]
@@ -260,8 +265,9 @@ async fn sync_without_owned_games_reports_a_warning() {
     let (app, _db) = test_app("empty").await;
     let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["games_checked"], 0);
-    assert_eq!(body["run_id"], 0, "没有目标时不写运行记录");
+    assert_eq!(body["running"], false);
+    assert_eq!(body["total"], 0);
+    assert_eq!(body["started_at"], Value::Null, "没有目标时不会启动任务");
     assert!(
         body["warnings"][0]
             .as_str()

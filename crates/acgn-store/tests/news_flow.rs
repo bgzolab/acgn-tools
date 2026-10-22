@@ -124,7 +124,7 @@ async fn news_targets_only_include_owned_steam_games() {
     )
     .await;
 
-    let targets = db.news_targets("schinese", 10).await.unwrap();
+    let targets = db.news_targets("schinese").await.unwrap();
     let ids: Vec<&str> = targets
         .iter()
         .map(|target| target.external_id.as_str())
@@ -276,7 +276,7 @@ async fn status_tracks_success_pending_and_failures() {
     assert!(status.last_synced_at.is_some());
 
     // 「从没抓过」优先于「抓过但失败」；失败的游戏不会被跳过
-    let targets = db.news_targets("schinese", 10).await.unwrap();
+    let targets = db.news_targets("schinese").await.unwrap();
     assert_eq!(targets[0].game_id, second);
 
     // 失败后成功：清掉错误，pending 归零

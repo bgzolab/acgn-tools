@@ -25,21 +25,11 @@ GET {{host}}/api/news?game_id=1
 ### 新闻源覆盖率（已同步 / 待同步 / 失败）
 GET {{host}}/api/news/status
 
-### 同步下一批新闻（每次最多 30 个游戏；已同步的会排到队尾）
+### 启动全量新闻同步（后台任务：拉取所有已拥有游戏，立即返回进度）
 POST {{host}}/api/news/sync
-Content-Type: application/json
 
-{
-  "limit": 30
-}
-
-### 只同步一个游戏的新闻（必须已拥有）
-POST {{host}}/api/news/sync
-Content-Type: application/json
-
-{
-  "game_id": 1
-}
+### 查询当前 / 最近一轮新闻同步进度（前端轮询；done/total/ETA）
+GET {{host}}/api/news/sync/status
 
 ### 账号列表（含库存 / 愿望单条目数）
 GET {{host}}/api/accounts

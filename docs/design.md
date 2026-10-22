@@ -58,7 +58,7 @@ Two deliberate choices:
 | `library_entries` | My relationship to a game: status, rating, progress, playtime, achievements, note, favorite, plus sync bookkeeping. 1:1 with `games` today |
 | `accounts` | A **source identity** (SteamID64): persona name, avatar, profile URL, region, raw profile payload, last sync. Unique per `(source, external_id)`. Not a multi-user login |
 | `game_accounts` | Many-to-many "this game is on that account": wishlist membership, per-account playtime / last played, and the account-region price |
-| `game_news` | Archived announcements for owned games, unique per `(game, language, guid)`; `summary` is plain text |
+| `game_news` | Archived announcements for owned games, unique per `(game, language, guid)`; `summary` is the full plain text |
 | `news_feeds` | Per-game news source state: last attempt, last success, last error, last returned item count |
 | `import_runs` | One row per import / enrichment run: counts, warnings, duration, error |
 
@@ -385,26 +385,32 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
   `game_accounts.source_playtime_minutes IS NOT NULL` (0 minutes counts); legacy rows without
   account links fall back to `library_entries.source_playtime_minutes`. Wishlist-only entries are
   not polled.
-- **Sync is explicit and batched**: `POST /api/news/sync` processes `limit` feeds (default 30,
-  max 200). Ordering is "never attempted → failed → longest since last fetch", so repeated clicks
-  eventually cover the whole library and then rotate. A single request never fans out over
-  hundreds of feeds.
+- **Sync is one full pass, run in the background.** `POST /api/news/sync` immediately returns
+  and a server task fetches **all** owned feeds (ordering: never attempted → last failed →
+  longest since last fetch). `GET /api/news/sync/status` exposes `done / total`, current game,
+  succeeded / failed, elapsed and an ETA derived from the average per-feed time. Starting again
+  while a task is running returns the current progress instead of launching a second pass.
+- **Each feed is written as soon as it finishes**, so the list can be refreshed while the sync is
+  still running. The frontend polls progress and silently refreshes the current page whenever
+  `done` advances.
 - **Feeds are archived, not mirrored.** `game_news` keeps every guid ever seen; a feed returning
   only its latest posts does not delete older rows. A game's news and feed state cascade when the
   game is deleted.
-- **Each feed is independent.** A 404 is treated as an empty feed (delisted games should
-  converge instead of retrying forever); other failures are recorded in `news_feeds.last_error`
-  and the old news stays visible. Three consecutive failures stop the batch so a dead proxy does
-  not wait for every game's timeout.
-- **The summary is plain text.** RSS `description` is either text or escaped HTML; the adapter
-  strips tags and decodes entities once before storing. The frontend renders text only, so no
-  HTML sanitizer is needed.
+- **Each feed is independent.** A 404, or an HTML page for an app without a community hub
+  (Portal, Portal 2, …), is treated as an empty feed so those entries converge instead of
+  retrying forever; other failures are recorded in `news_feeds.last_error` and the old news
+  stays visible. Three consecutive failures stop the pass so a dead proxy does not wait for
+  every game's timeout; the remaining feeds are picked up on the next run.
+- **The summary is full plain text.** RSS `description` is either text or escaped HTML; the
+  adapter strips tags, decodes entities and preserves paragraph breaks **without truncating**.
+  The frontend shows a clamped excerpt in the list and the complete text in a local modal, so
+  reading an announcement never requires leaving the app. Nothing is rendered as HTML.
 - Each sync writes a `steam_news` row to `import_runs` (feed attempts count as `seen`, inserted /
   changed news as `added` / `updated`, failed feeds as `skipped`). When every attempted feed
-  fails, the run is recorded as `failed`; an empty target list writes no run (`run_id == 0`).
+  fails, the run is recorded as `failed`; an empty target list writes no run.
 - Fixture mode reads `fixtures/steam/news.json` (`{ "news": { "<appid>": [NewsEntry…] } }`).
   Missing file → explicit error; appid missing from the file → empty feed with a warning. The
-  fixture generator writes the latest five posts per appid from the live RSS.
+  fixture generator writes the latest five posts per appid from the live RSS, with full text.
 - The data contract is [`NewsEntry`](../crates/acgn-core/src/dto.rs): a future Bangumi / Xiaoheihe
   news adapter can produce the same structure and reuse the storage and UI.
 
@@ -424,8 +430,10 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
 - The library filters by account and cards show the selected account's regional price plus
   account avatars; the detail drawer lists every linked account with its own playtime and price.
 - The news page lists announcements across owned games, newest first, with the game poster and a
-  link back to the library entry. It shows news-source coverage and offers explicit batched sync
-  (10 / 30 / 50 / 100 games at a time); opening the page only reads the local archive.
+  link back to the library entry. **Sync All News** starts one background pass over the whole
+  library; the page shows a progress bar (done / total, current game, elapsed, ETA), polls the
+  progress endpoint and refreshes the list as feeds land. Clicking any item opens the full text
+  in a modal; opening the page itself only reads the local archive.
 - Images come from Steam's CDN; a failed load falls back to a generated placeholder with the
   title, because the CDN is not reachable from every network. Account avatars fall back to a
   monogram on load failure (the fixture uses an inline SVG avatar, so the offline demo works).
@@ -447,8 +455,8 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
   failure recovery and cascade deletion.
 - `acgn-server` tests build the router with `tower::ServiceExt::oneshot` and assert the error
   envelope contract plus the account endpoints (resolve / list / region patch / delete,
-  account-filtered games, regional enrichment) and the news endpoints (fixture sync, pagination,
-  idempotency, run history) against a temporary fixture directory.
+  account-filtered games, regional enrichment) and the news endpoints (background full sync with
+  fixture data, progress polling, pagination, idempotency, run history).
 - `fixtures/steam/*.json` is **generated** by `scripts/gen-steam-fixture.mjs` from public
   endpoints; never hand-edit it. `profile.json` can be regenerated offline with
   `node scripts/gen-steam-fixture.mjs --profile-only`. The directory is marked

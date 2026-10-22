@@ -2,48 +2,33 @@
 //!
 //! 设计要点：
 //!
-//! * 新闻落库、列表只读 SQLite；网络只发生在显式的 `POST /api/news/sync`；
-//! * 一次同步处理一小批游戏（默认 30），按「从没抓过 → 抓得最久」轮转，
-//!   大型库存可以多点几次，或在 UI 里连续点「继续同步」；
+//! * 新闻落库、列表只读 SQLite；网络只发生在显式的同步任务里；
+//! * 一次同步**拉取全部已拥有游戏**，不再分批：`POST /api/news/sync` 立即返回，
+//!   后台任务逐个抓取并实时更新进度，前端轮询 `/api/news/sync/status`；
+//! * 每个 feed 抓完就落库，前端可以在同步过程中不断刷新列表（抓到一个更新一份）；
 //! * 单个 feed 失败只记 warning 与 `news_feeds.last_error`，不影响其它游戏；
 //!   连续失败会熔断本轮，避免代理挂掉时把整批都等超时。
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use acgn_core::{Error, GameNews, NewsListQuery, NewsStatus, NewsSyncSummary, Page, Source};
+use acgn_core::{Error, GameNews, NewsListQuery, NewsStatus, NewsSyncState, Page, Result, Source};
 use acgn_steam::news_feed_url;
-use acgn_store::RunCounts;
+use acgn_store::{NewsTarget, NewsUpsert, RunCounts};
 use axum::Json;
 use axum::extract::State;
 use chrono::Utc;
-use serde::Deserialize;
 use serde_json::json;
 use tracing::warn;
 
-use crate::error::{ApiError, ApiResult};
-use crate::extract::{ValidJson, ValidQuery};
+use crate::error::ApiResult;
+use crate::extract::ValidQuery;
 use crate::state::AppState;
-
-/// 一次同步默认 / 最多处理多少个游戏。
-const DEFAULT_LIMIT: i64 = 30;
-const MAX_LIMIT: i64 = 200;
 
 /// RSS 请求之间的间隔：社区站没有公开限额，但没必要连续打满。
 const NEWS_DELAY_MS: u64 = 250;
 
 /// 连续多少个 feed 失败就暂停本轮（系统性故障：代理挂掉、社区站拒绝……）。
 const MAX_CONSECUTIVE_FAILURES: usize = 3;
-
-/// POST /api/news/sync
-#[derive(Debug, Default, Deserialize)]
-pub struct NewsSyncRequest {
-    /// 本次最多同步多少个游戏（默认 30，最大 200）
-    #[serde(default)]
-    pub limit: Option<i64>,
-    /// 只同步一个游戏（详情抽屉 / 手动重试）
-    #[serde(default)]
-    pub game_id: Option<i64>,
-}
 
 /// GET /api/news
 pub async fn list_news(
@@ -64,48 +49,48 @@ pub async fn news_status(State(state): State<AppState>) -> ApiResult<Json<NewsSt
     Ok(Json(state.db.news_status(language).await?))
 }
 
-/// POST /api/news/sync —— 抓取下一批已拥有游戏的新闻。
-pub async fn sync_news(
-    State(state): State<AppState>,
-    ValidJson(request): ValidJson<NewsSyncRequest>,
-) -> ApiResult<Json<NewsSyncSummary>> {
+/// GET /api/news/sync/status —— 当前（或最近一轮）同步进度。
+pub async fn news_sync_status(State(state): State<AppState>) -> Json<NewsSyncState> {
+    Json(state.news_sync.snapshot())
+}
+
+/// POST /api/news/sync —— 启动一轮「全部已拥有游戏」的新闻同步。
+///
+/// 请求立即返回；后台任务一边抓取一边落库。已有一轮在跑时返回当前进度，
+/// 不会重复启动（前端保持轮询即可）。
+pub async fn start_news_sync(State(state): State<AppState>) -> ApiResult<Json<NewsSyncState>> {
+    let language = state.config.steam.language.as_str();
+    let targets = state.db.news_targets(language).await?;
+
+    if targets.is_empty() {
+        return Ok(Json(
+            state.news_sync.finish_empty(
+                "没有可同步新闻的已拥有 Steam 游戏（先同步库存，或用真实网络 / fixture 重试）"
+                    .to_string(),
+            ),
+        ));
+    }
+
+    if !state.news_sync.start(targets.len() as i64) {
+        return Ok(Json(state.news_sync.snapshot()));
+    }
+
+    let initial = state.news_sync.snapshot();
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        run_news_sync(task_state, targets).await;
+    });
+
+    Ok(Json(initial))
+}
+
+/// 后台任务：逐个抓取全部新闻源，每完成一个就写库并更新进度。
+async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
     let started = Instant::now();
     let language = state.config.steam.language.clone();
     let country = state.config.steam.country.clone();
-    let limit = request.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
 
-    let targets = match request.game_id {
-        Some(game_id) => match state.db.news_target(game_id).await? {
-            Some(target) => vec![target],
-            None => {
-                return Err(ApiError(Error::invalid(format!(
-                    "游戏 #{game_id} 不在已拥有的 Steam 库中，无法同步新闻"
-                ))));
-            }
-        },
-        None => state.db.news_targets(&language, limit).await?,
-    };
-
-    if targets.is_empty() {
-        let status = state.db.news_status(&language).await?;
-        return Ok(Json(NewsSyncSummary {
-            run_id: 0,
-            games_checked: 0,
-            games_failed: 0,
-            items_added: 0,
-            items_updated: 0,
-            items_unchanged: 0,
-            pending_games: status.pending_games,
-            source_mode: state.steam.mode().to_string(),
-            duration_ms: started.elapsed().as_millis() as i64,
-            warnings: vec![
-                "没有可同步新闻的已拥有 Steam 游戏（先同步库存，或用真实网络 / fixture 重试）"
-                    .to_string(),
-            ],
-        }));
-    }
-
-    let run_id = state
+    let run_id = match state
         .db
         .begin_run(
             Source::Steam,
@@ -113,182 +98,149 @@ pub async fn sync_news(
             Some(json!({
                 "language": language,
                 "country": country,
-                "limit": limit,
-                "game_id": request.game_id,
+                "targets": targets.len(),
             })),
         )
-        .await?;
+        .await
+    {
+        Ok(run_id) => run_id,
+        Err(err) => {
+            state
+                .news_sync
+                .push_warning(format!("无法写入同步记录：{err}"));
+            state.news_sync.finish();
+            return;
+        }
+    };
 
-    let mut games_checked = 0i64;
-    let mut games_failed = 0i64;
-    let mut items_added = 0i64;
-    let mut items_updated = 0i64;
-    let mut items_unchanged = 0i64;
     let mut consecutive_failures = 0usize;
     let mut first_error: Option<String> = None;
     let mut warnings = Vec::new();
 
     for (index, target) in targets.iter().enumerate() {
+        state.news_sync.set_current(target.title.clone());
         let feed_url = news_feed_url(&target.external_id, &country, &language);
 
-        match state.steam.fetch_news(&target.external_id).await {
-            Ok(fetch) => {
+        match fetch_and_store(&state, target, &language, &feed_url).await {
+            Ok((counts, feed_warnings)) => {
                 consecutive_failures = 0;
-                for warning in &fetch.warnings {
+                for warning in feed_warnings {
                     push_warning(&mut warnings, warning.clone());
+                    state.news_sync.push_warning(warning);
                 }
-
-                match state
-                    .db
-                    .store_news(target.game_id, &language, &fetch.entries, Utc::now())
-                    .await
-                {
-                    Ok(counts) => {
-                        games_checked += 1;
-                        items_added += counts.added;
-                        items_updated += counts.updated;
-                        items_unchanged += counts.unchanged;
-
-                        if let Err(err) = state
-                            .db
-                            .mark_news_feed_success(
-                                target.game_id,
-                                &language,
-                                &feed_url,
-                                fetch.entries.len() as i64,
-                                Utc::now(),
-                            )
-                            .await
-                        {
-                            // 新闻已经落库，状态记账失败不该让整轮同步失败。
-                            push_warning(
-                                &mut warnings,
-                                format!("{}: 记录同步状态失败（{err}）", target.title),
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        games_failed += 1;
-                        consecutive_failures += 1;
-                        record_failure(
-                            &state,
-                            target.game_id,
-                            &language,
-                            &feed_url,
-                            &err.to_string(),
-                        )
-                        .await;
-                        push_warning(&mut warnings, format!("{}: {err}", target.title));
-                        first_error.get_or_insert_with(|| err.to_string());
-
-                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                            push_warning(
-                                &mut warnings,
-                                format!(
-                                    "连续 {MAX_CONSECUTIVE_FAILURES} 个新闻源处理失败，已暂停本轮（稍后再试）"
-                                ),
-                            );
-                            break;
-                        }
-                    }
-                }
+                state
+                    .news_sync
+                    .record_success(counts.added, counts.updated, counts.unchanged);
             }
             Err(err) => {
-                games_failed += 1;
                 consecutive_failures += 1;
-                push_warning(&mut warnings, format!("{}: {err}", target.title));
+                state.news_sync.record_failure();
+                let warning = format!("{}: {err}", target.title);
+                push_warning(&mut warnings, warning.clone());
+                state.news_sync.push_warning(warning);
                 first_error.get_or_insert_with(|| err.to_string());
-                record_failure(
-                    &state,
-                    target.game_id,
-                    &language,
-                    &feed_url,
-                    &err.to_string(),
-                )
-                .await;
+                record_feed_failure(&state, target, &language, &feed_url, &err).await;
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    push_warning(
-                        &mut warnings,
-                        format!(
-                            "连续 {MAX_CONSECUTIVE_FAILURES} 个新闻源失败，已暂停本轮（稍后再试）"
-                        ),
+                    let warning = format!(
+                        "连续 {MAX_CONSECUTIVE_FAILURES} 个新闻源失败，已暂停本轮（稍后再试）"
                     );
+                    push_warning(&mut warnings, warning.clone());
+                    state.news_sync.push_warning(warning);
                     break;
                 }
             }
         }
 
         if state.steam.mode() != "fixture" && index + 1 < targets.len() {
-            tokio::time::sleep(std::time::Duration::from_millis(NEWS_DELAY_MS)).await;
+            tokio::time::sleep(Duration::from_millis(NEWS_DELAY_MS)).await;
         }
     }
 
     let duration_ms = started.elapsed().as_millis() as i64;
-    let pending_games = state
-        .db
-        .news_status(&language)
-        .await
-        .map(|status| status.pending_games)
-        .unwrap_or(0);
+    let snapshot = state.news_sync.snapshot();
+    let counts = RunCounts {
+        seen: snapshot.done,
+        added: snapshot.items_added,
+        updated: snapshot.items_updated,
+        unchanged: snapshot.items_unchanged,
+        skipped: snapshot.failed,
+        missing: 0,
+    };
 
-    // 全部失败时把运行记录标成 failed：至少让同步历史诚实地反映这一轮没有成功。
-    if games_checked == 0 && games_failed > 0 {
+    if snapshot.succeeded == 0 && snapshot.failed > 0 {
         let reason = first_error.unwrap_or_else(|| "所有新闻源请求失败".to_string());
         finish_run_err_best_effort(&state, run_id, &reason, duration_ms).await;
     } else if let Err(err) = state
         .db
-        .finish_run_ok(
-            run_id,
-            RunCounts {
-                seen: games_checked + games_failed,
-                added: items_added,
-                updated: items_updated,
-                unchanged: items_unchanged,
-                skipped: games_failed,
-                missing: 0,
-            },
-            &warnings,
-            duration_ms,
-        )
+        .finish_run_ok(run_id, counts, &warnings, duration_ms)
         .await
     {
         finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
-        return Err(ApiError(err));
     }
 
-    Ok(Json(NewsSyncSummary {
-        run_id,
-        games_checked,
-        games_failed,
-        items_added,
-        items_updated,
-        items_unchanged,
-        pending_games,
-        source_mode: state.steam.mode().to_string(),
-        duration_ms,
-        warnings,
-    }))
+    state.news_sync.finish();
+}
+
+/// 抓取 + 落库一个 feed；状态记账失败只记 warning，不影响新闻入库。
+async fn fetch_and_store(
+    state: &AppState,
+    target: &NewsTarget,
+    language: &str,
+    feed_url: &str,
+) -> Result<(NewsUpsert, Vec<String>)> {
+    let fetch = state.steam.fetch_news(&target.external_id).await?;
+    let counts = state
+        .db
+        .store_news(target.game_id, language, &fetch.entries, Utc::now())
+        .await?;
+
+    let mut warnings = fetch
+        .warnings
+        .into_iter()
+        .map(|warning| format!("{}: {warning}", target.title))
+        .collect::<Vec<_>>();
+    if let Err(err) = state
+        .db
+        .mark_news_feed_success(
+            target.game_id,
+            language,
+            feed_url,
+            fetch.entries.len() as i64,
+            Utc::now(),
+        )
+        .await
+    {
+        // 新闻已经落库，状态记账失败不该让整轮同步失败。
+        warnings.push(format!("{}: 记录同步状态失败（{err}）", target.title));
+    }
+    Ok((counts, warnings))
 }
 
 /// 记录 feed 失败；状态写失败只影响下次排序，不阻塞本轮。
-async fn record_failure(
+async fn record_feed_failure(
     state: &AppState,
-    game_id: i64,
+    target: &NewsTarget,
     language: &str,
     feed_url: &str,
-    error: &str,
+    error: &Error,
 ) {
     if let Err(err) = state
         .db
-        .mark_news_feed_failure(game_id, language, feed_url, error, Utc::now())
+        .mark_news_feed_failure(
+            target.game_id,
+            language,
+            feed_url,
+            &error.to_string(),
+            Utc::now(),
+        )
         .await
     {
-        warn!(game_id, error = %err, "记录新闻源失败状态时出错");
+        warn!(game_id = target.game_id, error = %err, "记录新闻源失败状态时出错");
     }
 }
 
-/// 告警只保留前 12 条：几百个游戏全失败时不要把响应撑爆。
+/// 告警只保留前 12 条：几百个游戏全失败时不要把运行记录撑爆。
 fn push_warning(warnings: &mut Vec<String>, warning: String) {
     if warnings.len() < 12 {
         warnings.push(warning);

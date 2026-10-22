@@ -46,7 +46,8 @@ Metadata follows the source; personal state follows the local database — see
 | GET | `/api/stats` | Dashboard aggregates |
 | GET | `/api/news` | Game news across owned Steam games, newest first (`page`, `per_page`, `game_id`) |
 | GET | `/api/news/status` | News-source coverage: owned / synced / pending / failed / item counts |
-| POST | `/api/news/sync` | Fetch the next batch of Steam announcement RSS feeds (`limit`, `game_id`) |
+| GET | `/api/news/sync/status` | Live progress of the current / last full news sync (`done`, `total`, ETA, …) |
+| POST | `/api/news/sync` | Start a background full sync of every owned game's news feed |
 | GET | `/api/accounts` | Source accounts with owned / wishlist counts |
 | POST | `/api/accounts/resolve` | Add an account: resolve steamID / vanity / profile link, fetch its profile (idempotent) |
 | PATCH | `/api/accounts/{id}` | Set or clear the account's regional price override |
@@ -125,7 +126,7 @@ library entry has `source_playtime_minutes`. Wishlist-only entries are ignored.
       "game_poster_url": "…",
       "language": "schinese",
       "title": "Patch notes",
-      "summary": "Plain-text summary (HTML stripped by the adapter)",
+      "summary": "Full plain-text body (HTML stripped, not truncated)",
       "url": "https://steamcommunity.com/games/1245620/announcements/detail/…",
       "author": "steam",
       "published_at": "2026-10-20T12:00:00Z",
@@ -158,41 +159,53 @@ failed; they keep their previously archived news and are retried on the next syn
 
 #### POST /api/news/sync
 
-```json
-{ "limit": 30, "game_id": null }
-```
-
-- `limit` defaults to 30, clamped to 1..200. Each request processes one batch; the queue order is
-  "never attempted → last attempt failed → longest since last fetch", so repeated calls cover the
-  library and then rotate.
-- `game_id` restricts the batch to one owned game (a manual refresh / retry for a single feed).
-  A game that is not owned → `400 invalid`.
-- A missing / delisted feed (HTTP 404) is treated as an empty feed. Other per-game failures are
-  reported in `warnings` / `games_failed` without failing the whole request. Three consecutive
-  failures stop the batch early.
-- Response:
+Starts one **background pass over every owned game** and returns immediately. There is no batch
+size and no request body. Calling it while a pass is already running returns the current progress
+instead of starting another one.
 
 ```json
 {
-  "run_id": 18,
-  "games_checked": 30,
-  "games_failed": 1,
-  "items_added": 12,
-  "items_updated": 2,
-  "items_unchanged": 88,
-  "pending_games": 12,
-  "source_mode": "live",
-  "duration_ms": 9400,
-  "warnings": ["…"]
+  "running": true,
+  "total": 42,
+  "done": 0,
+  "succeeded": 0,
+  "failed": 0,
+  "items_added": 0,
+  "items_updated": 0,
+  "items_unchanged": 0,
+  "current_game": null,
+  "started_at": "2026-10-22T07:00:00Z",
+  "finished_at": null,
+  "elapsed_ms": 0,
+  "eta_seconds": null,
+  "warnings": []
 }
 ```
 
-- a `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
+Each feed is fetched sequentially and written as soon as it finishes, so `GET /api/news` already
+shows new items while the pass is running. `done` counts finished feeds (success **and** failure);
+`eta_seconds` is estimated from the average time per finished feed.
+
+- A missing / delisted feed (HTTP 404), or an HTML page for an app without a community hub
+  (Portal, Portal 2, …), is treated as an empty feed. Other per-game failures are reported in
+  `warnings` / `failed` without failing the whole pass. Three consecutive failures stop the pass
+  early; the remaining feeds are picked up on the next run.
+- The full announcement text is stored (HTML stripped, paragraph breaks preserved) — the API does
+  not truncate `summary`. The web UI shows an excerpt in the list and the full text in a modal.
+- A `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
   `unchanged` = news rows, `skipped` = failed feeds). If every attempted feed fails the run is
-  marked `failed`; with no owned games the response has `run_id: 0` and a warning.
+  marked `failed`. With no owned games, `running` is `false`, `total` is `0` and a warning is
+  returned; no run row is written.
 - RSS request language / region follow `STEAM_LANGUAGE` / `STEAM_COUNTRY` (default
   `schinese` / `cn`). The language is part of the archive key, so changing it hides the previous
   language's rows instead of deleting them.
+
+#### GET /api/news/sync/status
+
+Returns the same shape as the POST response, for polling. The state is kept in memory: after a
+server restart it resets to `running: false`, while already-fetched news and coverage remain in
+SQLite. The UI polls every ~600 ms, updates the progress bar / ETA, and silently refreshes the
+current list page whenever `done` advances.
 
 ### Steam imports are per account
 

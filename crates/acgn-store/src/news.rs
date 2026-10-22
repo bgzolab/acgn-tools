@@ -179,7 +179,7 @@ impl Db {
     }
 
     /// 待同步的新闻源：从没抓过 → 上次失败 → 成功但抓得最久的。
-    pub async fn news_targets(&self, language: &str, limit: i64) -> Result<Vec<NewsTarget>> {
+    pub async fn news_targets(&self, language: &str) -> Result<Vec<NewsTarget>> {
         let sql = format!(
             "{OWNED_STEAM_GAMES}
              SELECT o.id, o.external_id, o.title
@@ -188,13 +188,11 @@ impl Db {
              ORDER BY f.last_fetched_at IS NOT NULL,
                       f.last_error IS NULL,
                       f.last_fetched_at ASC,
-                      o.id ASC
-             LIMIT ?"
+                      o.id ASC"
         );
 
         let rows: Vec<(i64, String, String)> = sqlx::query_as(&sql)
             .bind(language)
-            .bind(limit.clamp(1, 500))
             .fetch_all(&self.pool)
             .await
             .db()?;

@@ -17,7 +17,7 @@ import type {
   LibraryEntry,
   NewsListParams,
   NewsStatus,
-  NewsSyncSummary,
+  NewsSyncState,
   Page,
   PublicConfig,
   Stats,
@@ -48,9 +48,11 @@ export function listNews(params: NewsListParams = {}) {
 
 export const getNewsStatus = () => http.get<NewsStatus>("/news/status");
 
-/** 同步下一批已拥有游戏的新闻（默认 30 个；可只同步单个 game_id） */
-export const syncNews = (body: { limit?: number; game_id?: number } = {}) =>
-  http.post<NewsSyncSummary>("/news/sync", body);
+/** 启动全量新闻同步（后台任务；立即返回初始进度） */
+export const startNewsSync = () => http.post<NewsSyncState>("/news/sync", {});
+
+/** 当前 / 最近一轮新闻同步进度（前端轮询） */
+export const getNewsSyncStatus = () => http.get<NewsSyncState>("/news/sync/status");
 
 // ------------------------------------------------------------------ 数据源账号
 

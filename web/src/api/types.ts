@@ -323,16 +323,21 @@ export interface NewsStatus {
   last_synced_at: string | null;
 }
 
-export interface NewsSyncSummary {
-  run_id: number;
-  games_checked: number;
-  games_failed: number;
+export interface NewsSyncState {
+  running: boolean;
+  total: number;
+  done: number;
+  succeeded: number;
+  failed: number;
   items_added: number;
   items_updated: number;
   items_unchanged: number;
-  pending_games: number;
-  source_mode: string;
-  duration_ms: number;
+  current_game: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  elapsed_ms: number;
+  /** 按平均耗时估算的剩余秒数 */
+  eta_seconds: number | null;
   warnings: string[];
 }
 

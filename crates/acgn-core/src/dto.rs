@@ -289,22 +289,28 @@ pub struct NewsStatus {
     pub last_synced_at: Option<DateTime<Utc>>,
 }
 
-/// 一次新闻同步的结果汇总。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NewsSyncSummary {
-    /// 本次运行记录 id；没有目标（未导入库存）时为 0
-    pub run_id: i64,
-    /// 成功拿到并解析的新闻源数量
-    pub games_checked: i64,
-    /// 请求 / 解析 / 写库失败的数量
-    pub games_failed: i64,
+/// 一次新闻同步的实时状态（前台轮询 / 后台任务共用）。
+///
+/// 同步是一次拉取全部已拥有游戏，不再分批；`done / total`、`current_game` 与
+/// `eta_seconds` 用于进度条和「还要多久」。`items_*` 是**本轮**新增 / 更新 / 未变的
+/// 新闻条数，不是累计值。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NewsSyncState {
+    pub running: bool,
+    pub total: i64,
+    pub done: i64,
+    pub succeeded: i64,
+    pub failed: i64,
     pub items_added: i64,
     pub items_updated: i64,
     pub items_unchanged: i64,
-    /// 本轮结束后仍未成功同步过的游戏数（再点一次继续）
-    pub pending_games: i64,
-    pub source_mode: String,
-    pub duration_ms: i64,
+    /// 当前正在抓取的游戏标题（给进度条下方展示）
+    pub current_game: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub elapsed_ms: i64,
+    /// 按「已完成个数的平均耗时」估算的剩余秒数；还没完成任何一项时为 `None`
+    pub eta_seconds: Option<i64>,
     pub warnings: Vec<String>,
 }
 

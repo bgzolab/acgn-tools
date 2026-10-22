@@ -226,15 +226,21 @@ function readTag(block, name) {
   return decodeXmlEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")).trim();
 }
 
-/** HTML → 纯文本（与 Rust `html_to_text` 保持相同的展示口径）。 */
+/** HTML → 纯文本（保留段落 / 换行，不截断；与 Rust `html_to_text` 口径一致）。 */
 function htmlToText(raw) {
   if (!raw) return undefined;
   const stripped = raw
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-3])>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-3])>/gi, "\n\n")
     .replace(/<[^>]*>/g, "");
-  const text = decodeXmlEntities(stripped).replace(/\s+/g, " ").trim();
-  return text ? text.slice(0, 4000) : undefined;
+  const decoded = decodeXmlEntities(stripped).replace(/\r\n?/g, "\n");
+  const text = decoded
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+/g, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return text || undefined;
 }
 
 /** 解析 Steam 公告 RSS：只保留最近 NEWS_PER_GAME 条，坏条目跳过。 */
