@@ -198,6 +198,7 @@ docs/implement-plans/*
 docs/implementation-plans/*
 docs/sessions/*
 .opencode/plans/*
+.opencode/index/*
 
 # hide folder
 .bgzo/
