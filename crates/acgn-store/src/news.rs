@@ -212,28 +212,6 @@ impl Db {
             .collect())
     }
 
-    /// 单个游戏的新闻源；不是已拥有的 Steam 游戏时返回 `None`。
-    pub async fn news_target(&self, game_id: i64) -> Result<Option<NewsTarget>> {
-        let sql = format!(
-            "{OWNED_STEAM_GAMES}
-             SELECT o.id, o.external_id, o.title
-             FROM owned o
-             WHERE o.id = ?
-             LIMIT 1"
-        );
-        let row: Option<(i64, String, String)> = sqlx::query_as(&sql)
-            .bind(game_id)
-            .fetch_optional(&self.pool)
-            .await
-            .db()?;
-
-        Ok(row.map(|(game_id, external_id, title)| NewsTarget {
-            game_id,
-            external_id,
-            title,
-        }))
-    }
-
     /// 写入一个 feed 的新闻（幂等）。
     ///
     /// * `guid` 已存在且内容一致 → `unchanged`，不写库；

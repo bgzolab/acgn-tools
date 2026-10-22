@@ -227,10 +227,6 @@ impl GameListQuery {
     pub fn per_page(&self) -> i64 {
         self.per_page.unwrap_or(48).clamp(1, 200)
     }
-
-    pub fn offset(&self) -> i64 {
-        (self.page() - 1).saturating_mul(self.per_page())
-    }
 }
 
 /// 新闻列表查询参数。

@@ -166,6 +166,14 @@ async fn run_news_sync_inner(
     let mut first_error: Option<String> = None;
     let mut aborted: Option<String> = None;
     let mut warnings = Vec::new();
+    if let Some(fixture) = state.steam.fixture() {
+        // 这是全局条件：每轮只播报一次，避免 125 个 feed 各复制一份把真正的
+        // per-game 告警挤出 12 条容量。
+        for warning in fixture.news_locale_warnings(language, country) {
+            push_warning(&mut warnings, warning.clone());
+            state.news_sync.push_warning(warning);
+        }
+    }
 
     for (index, target) in targets.iter().enumerate() {
         state.news_sync.set_current(target.title.clone());
@@ -248,7 +256,13 @@ async fn run_news_sync_inner(
         .await
         && let Err(record_err) = state
             .db
-            .finish_run_err_with_counts(run_id, counts, &warnings, &err.to_string(), duration_ms)
+            .finish_run_err_with_counts(
+                run_id,
+                counts,
+                &warnings,
+                &format!("运行记录写入失败：{err}"),
+                duration_ms,
+            )
             .await
     {
         warn!(run_id, error = %record_err, "写入失败记录时又出错了");

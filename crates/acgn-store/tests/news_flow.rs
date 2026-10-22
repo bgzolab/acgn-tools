@@ -131,18 +131,6 @@ async fn news_targets_only_include_owned_steam_games() {
         .collect();
     assert_eq!(ids, vec!["100", "300"], "愿望单不应抓新闻");
 
-    let wishlist_id = game_id(&db, "200").await;
-    assert!(
-        db.news_target(wishlist_id).await.unwrap().is_none(),
-        "愿望单条目不是新闻目标"
-    );
-    assert!(
-        db.news_target(game_id(&db, "100").await)
-            .await
-            .unwrap()
-            .is_some()
-    );
-
     let status = db.news_status("schinese").await.unwrap();
     assert_eq!(status.owned_games, 2);
     assert_eq!(status.synced_games, 0);

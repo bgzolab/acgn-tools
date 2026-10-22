@@ -500,6 +500,8 @@ mod tests {
         assert_eq!(news.entries[0].title, "Patch");
         assert_eq!(fixture.news_language.as_deref(), Some("schinese"));
         assert_eq!(fixture.news_country.as_deref(), Some("cn"));
+        assert_eq!(fixture.news_locale_warnings("english", "us").len(), 2);
+        assert!(fixture.news_locale_warnings("schinese", "cn").is_empty());
         assert!(
             fixture.news_for_app("2").unwrap().entries.is_empty(),
             "没有记录的 appid 应按空 feed 处理"

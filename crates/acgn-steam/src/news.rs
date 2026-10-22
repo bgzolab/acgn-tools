@@ -21,8 +21,6 @@ use crate::news_feed_url;
 pub struct NewsFetch {
     pub entries: Vec<NewsEntry>,
     pub warnings: Vec<String>,
-    /// `fixture` / `live`
-    pub source_mode: &'static str,
 }
 
 impl SteamClient {
@@ -32,24 +30,7 @@ impl SteamClient {
     /// 永远把同步状态标记为失败。其它 4xx/5xx 交给上层记录并继续下一个游戏。
     pub async fn fetch_news(&self, appid: &str) -> Result<NewsFetch> {
         if let Some(fixture) = self.fixture() {
-            let mut fetch = fixture.news_for_app(appid)?;
-            if let Some(language) = fixture.news_language.as_deref()
-                && !language.eq_ignore_ascii_case(&self.config().language)
-            {
-                fetch.warnings.push(format!(
-                    "fixture news.json 按 {language} 生成，当前 STEAM_LANGUAGE={}：内容语言可能不一致",
-                    self.config().language
-                ));
-            }
-            if let Some(country) = fixture.news_country.as_deref()
-                && !country.eq_ignore_ascii_case(&self.config().country)
-            {
-                fetch.warnings.push(format!(
-                    "fixture news.json 按 {country} 区域生成，当前 STEAM_COUNTRY={}：区域内容可能不一致",
-                    self.config().country
-                ));
-            }
-            return Ok(fetch);
+            return fixture.news_for_app(appid);
         }
 
         let url = news_feed_url(appid, &self.config().country, &self.config().language);
@@ -62,7 +43,6 @@ impl SteamClient {
             return Ok(NewsFetch {
                 entries: Vec::new(),
                 warnings: vec!["没有新闻页（404），按空 feed 处理".to_string()],
-                source_mode: "live",
             });
         }
         if status.as_u16() == 429 {
@@ -94,7 +74,6 @@ impl SteamClient {
             return Ok(NewsFetch {
                 entries: Vec::new(),
                 warnings: vec!["没有可用的新闻 RSS（返回 HTML），按空 feed 处理".to_string()],
-                source_mode: "live",
             });
         }
 
@@ -108,7 +87,6 @@ impl SteamClient {
         Ok(NewsFetch {
             entries,
             warnings: Vec::new(),
-            source_mode: "live",
         })
     }
 }
@@ -130,11 +108,27 @@ impl FixtureData {
         } else {
             Vec::new()
         };
-        Ok(NewsFetch {
-            entries,
-            warnings,
-            source_mode: "fixture",
-        })
+        Ok(NewsFetch { entries, warnings })
+    }
+
+    /// fixture 生成语言 / 区域与运行时配置不一致时的全局告警（每轮同步只播报一次）。
+    pub fn news_locale_warnings(&self, language: &str, country: &str) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some(fixture_language) = self.news_language.as_deref()
+            && !fixture_language.eq_ignore_ascii_case(language)
+        {
+            warnings.push(format!(
+                "fixture news.json 按 {fixture_language} 生成，当前 STEAM_LANGUAGE={language}：内容语言可能不一致"
+            ));
+        }
+        if let Some(fixture_country) = self.news_country.as_deref()
+            && !fixture_country.eq_ignore_ascii_case(country)
+        {
+            warnings.push(format!(
+                "fixture news.json 按 {fixture_country} 区域生成，当前 STEAM_COUNTRY={country}：区域内容可能不一致"
+            ));
+        }
+        warnings
     }
 }
 
@@ -610,50 +604,6 @@ mod tests {
         assert_eq!(resolve_html_entity("#x0"), Some('\u{fffd}'));
         assert_eq!(resolve_html_entity("#xD800"), Some('\u{fffd}'));
         assert_eq!(html_to_text("bad&#0;char").as_deref(), Some("bad�char"));
-    }
-
-    #[tokio::test]
-    async fn fixture_language_mismatch_warns() {
-        let dir =
-            std::env::temp_dir().join(format!("acgn-news-fixture-lang-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("创建临时 fixture 目录");
-        std::fs::write(
-            dir.join("wishlist.json"),
-            r#"{"steam_id":"76561198000000000","wishlist":{}}"#,
-        )
-        .expect("写 wishlist fixture");
-        std::fs::write(
-            dir.join("news.json"),
-            r#"{"language":"schinese","country":"cn","news":{"1":[]}}"#,
-        )
-        .expect("写 news fixture");
-
-        let client = SteamClient::new(crate::SteamConfig {
-            fixture: Some(dir.clone()),
-            language: "english".to_string(),
-            country: "us".to_string(),
-            ..Default::default()
-        })
-        .expect("客户端应能初始化");
-        let fetch = client.fetch_news("1").await.expect("fixture 新闻应可读");
-        assert!(
-            fetch
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("STEAM_LANGUAGE")),
-            "{:?}",
-            fetch.warnings
-        );
-        assert!(
-            fetch
-                .warnings
-                .iter()
-                .any(|warning| warning.contains("STEAM_COUNTRY")),
-            "{:?}",
-            fetch.warnings
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
