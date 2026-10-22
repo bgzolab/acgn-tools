@@ -411,6 +411,23 @@ impl Db {
         Ok(())
     }
 
+    /// 服务启动时把上次进程遗留的「进行中」新闻同步记录标记为失败。
+    ///
+    /// 全量同步可能跑几分钟，进程重启/崩溃会留下 `status = 'running'` 的
+    /// `steam_news` 运行记录；不清掉的话同步历史里会永远显示「进行中」。
+    pub async fn fail_stale_news_runs(&self, error: &str) -> Result<i64> {
+        let result = sqlx::query(
+            "UPDATE import_runs SET status = 'failed', error = ?, finished_at = ?
+             WHERE mode = 'steam_news' AND status = 'running'",
+        )
+        .bind(error)
+        .bind(Utc::now())
+        .execute(&self.pool)
+        .await
+        .db()?;
+        Ok(result.rows_affected() as i64)
+    }
+
     /// 新闻源覆盖率（当前语言）。
     pub async fn news_status(&self, language: &str) -> Result<NewsStatus> {
         let sql = format!(

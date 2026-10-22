@@ -290,6 +290,36 @@ async fn status_tracks_success_pending_and_failures() {
 }
 
 #[tokio::test]
+async fn stale_news_runs_are_marked_failed() {
+    let db = setup().await;
+    let news_run = db
+        .begin_run(Source::Steam, "steam_news", None)
+        .await
+        .expect("新闻运行记录应创建");
+    let other_run = db
+        .begin_run(Source::Steam, "steam_wishlist", None)
+        .await
+        .expect("其它运行记录应创建");
+
+    let failed = db
+        .fail_stale_news_runs("服务重启，上一轮新闻同步已中断")
+        .await
+        .expect("清理不应失败");
+    assert_eq!(failed, 1, "只应清理 steam_news 的进行中记录");
+
+    let news_run = db.get_import_run(news_run).await.unwrap().unwrap();
+    assert_eq!(news_run.status, "failed");
+    assert_eq!(
+        news_run.error.as_deref(),
+        Some("服务重启，上一轮新闻同步已中断")
+    );
+    assert!(news_run.finished_at.is_some());
+
+    let other_run = db.get_import_run(other_run).await.unwrap().unwrap();
+    assert_eq!(other_run.status, "running", "其它模式的运行记录不受影响");
+}
+
+#[tokio::test]
 async fn deleting_a_game_cascades_news_and_feed_state() {
     let db = setup().await;
     let account_id = account(&db).await;

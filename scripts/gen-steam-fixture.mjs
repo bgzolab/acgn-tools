@@ -202,18 +202,60 @@ async function writeLibraryFile(wishlist) {
   await writeProfileFile();
 }
 
-/** XML 实体 → 字符（只解一层，和 Rust 侧解析保持同一口径）。 */
+const HTML_ENTITIES = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  trade: "™",
+  copy: "©",
+  reg: "®",
+  deg: "°",
+  plusmn: "±",
+  times: "×",
+  divide: "÷",
+  frac12: "½",
+  frac14: "¼",
+  frac34: "¾",
+  sup2: "²",
+  sup3: "³",
+  micro: "µ",
+  para: "¶",
+  sect: "§",
+  middot: "·",
+  bull: "•",
+  hellip: "…",
+  ndash: "–",
+  mdash: "—",
+  lsquo: "‘",
+  rsquo: "’",
+  ldquo: "“",
+  rdquo: "”",
+  laquo: "«",
+  raquo: "»",
+  euro: "€",
+  pound: "£",
+  yen: "¥",
+  cent: "¢",
+  larr: "←",
+  rarr: "→",
+  uarr: "↑",
+  darr: "↓",
+  hearts: "♥",
+  spades: "♠",
+  clubs: "♣",
+  diams: "♦",
+};
+
+/** XML / HTML 实体 → 字符（只解一层，和 Rust 侧解析保持同一口径）。 */
 function decodeXmlEntities(value) {
-  return value.replace(/&(#x?[0-9a-fA-F]+|amp|lt|gt|quot|apos);/g, (raw, entity) => {
-    if (entity === "amp") return "&";
-    if (entity === "lt") return "<";
-    if (entity === "gt") return ">";
-    if (entity === "quot") return '"';
-    if (entity === "apos") return "'";
+  return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);/g, (raw, entity) => {
     const hex = entity.match(/^#x([0-9a-fA-F]+)$/);
     if (hex) return String.fromCodePoint(Number.parseInt(hex[1], 16));
     if (entity.startsWith("#")) return String.fromCodePoint(Number.parseInt(entity.slice(1), 10));
-    return raw;
+    return HTML_ENTITIES[entity] ?? raw;
   });
 }
 

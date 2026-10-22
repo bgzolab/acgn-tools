@@ -9,6 +9,7 @@
 //! * 单个 feed 失败只记 warning 与 `news_feeds.last_error`，不影响其它游戏；
 //!   连续失败会熔断本轮，避免代理挂掉时把整批都等超时。
 
+use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 
 use acgn_core::{Error, GameNews, NewsListQuery, NewsStatus, NewsSyncState, Page, Result, Source};
@@ -17,6 +18,7 @@ use acgn_store::{NewsTarget, NewsUpsert, RunCounts};
 use axum::Json;
 use axum::extract::State;
 use chrono::Utc;
+use futures::FutureExt;
 use serde_json::json;
 use tracing::warn;
 
@@ -85,6 +87,9 @@ pub async fn start_news_sync(State(state): State<AppState>) -> ApiResult<Json<Ne
 }
 
 /// 后台任务：逐个抓取全部新闻源，每完成一个就写库并更新进度。
+///
+/// 用 `catch_unwind` 包住主循环：无论正常结束还是任务 panic，都会收尾运行记录并
+/// 把 `news_sync.running` 复位，避免按钮永远停在「同步中…」。
 async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
     let started = Instant::now();
     let language = state.config.steam.language.clone();
@@ -113,15 +118,40 @@ async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
         }
     };
 
+    let outcome = AssertUnwindSafe(run_news_sync_inner(
+        &state, &targets, run_id, &language, &country,
+    ))
+    .catch_unwind()
+    .await;
+
+    if outcome.is_err() {
+        let error = "新闻同步任务异常终止（任务 panic）";
+        state.news_sync.push_warning(error.to_string());
+        finish_run_err_best_effort(&state, run_id, error, started.elapsed().as_millis() as i64)
+            .await;
+    }
+
+    state.news_sync.finish();
+}
+
+async fn run_news_sync_inner(
+    state: &AppState,
+    targets: &[NewsTarget],
+    run_id: i64,
+    language: &str,
+    country: &str,
+) {
+    let started = Instant::now();
     let mut consecutive_failures = 0usize;
     let mut first_error: Option<String> = None;
+    let mut aborted: Option<String> = None;
     let mut warnings = Vec::new();
 
     for (index, target) in targets.iter().enumerate() {
         state.news_sync.set_current(target.title.clone());
-        let feed_url = news_feed_url(&target.external_id, &country, &language);
+        let feed_url = news_feed_url(&target.external_id, country, language);
 
-        match fetch_and_store(&state, target, &language, &feed_url).await {
+        match fetch_and_store(state, target, language, &feed_url).await {
             Ok((counts, feed_warnings)) => {
                 consecutive_failures = 0;
                 for warning in feed_warnings {
@@ -132,6 +162,15 @@ async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
                     .news_sync
                     .record_success(counts.added, counts.updated, counts.unchanged);
             }
+            Err(err) if is_rate_limited(&err) => {
+                // 429 不记为该游戏的失败：它的上次成功状态/旧新闻保持不变，
+                // 下次同步会按原优先级重试；本轮立刻停下，不再打满剩余请求。
+                let warning = format!("{}: {err}，已停止本轮", target.title);
+                push_warning(&mut warnings, warning.clone());
+                state.news_sync.push_warning(warning);
+                aborted = Some(err.to_string());
+                break;
+            }
             Err(err) => {
                 consecutive_failures += 1;
                 state.news_sync.record_failure();
@@ -139,7 +178,7 @@ async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
                 push_warning(&mut warnings, warning.clone());
                 state.news_sync.push_warning(warning);
                 first_error.get_or_insert_with(|| err.to_string());
-                record_feed_failure(&state, target, &language, &feed_url, &err).await;
+                record_feed_failure(state, target, language, &feed_url, &err).await;
 
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     let warning = format!(
@@ -168,18 +207,23 @@ async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
         missing: 0,
     };
 
-    if snapshot.succeeded == 0 && snapshot.failed > 0 {
-        let reason = first_error.unwrap_or_else(|| "所有新闻源请求失败".to_string());
-        finish_run_err_best_effort(&state, run_id, &reason, duration_ms).await;
+    if snapshot.succeeded == 0 && (snapshot.failed > 0 || aborted.is_some()) {
+        let reason = aborted
+            .or(first_error)
+            .unwrap_or_else(|| "所有新闻源请求失败".to_string());
+        finish_run_err_best_effort(state, run_id, &reason, duration_ms).await;
     } else if let Err(err) = state
         .db
         .finish_run_ok(run_id, counts, &warnings, duration_ms)
         .await
     {
-        finish_run_err_best_effort(&state, run_id, &err.to_string(), duration_ms).await;
+        finish_run_err_best_effort(state, run_id, &err.to_string(), duration_ms).await;
     }
+}
 
-    state.news_sync.finish();
+/// 是否是 Steam 的 429 限流：这类错误应该终止本轮，而不是把游戏记成失败。
+fn is_rate_limited(err: &Error) -> bool {
+    matches!(err, Error::SourceRejected(message) if message.contains("429") || message.contains("限流"))
 }
 
 /// 抓取 + 落库一个 feed；状态记账失败只记 warning，不影响新闻入库。
@@ -250,5 +294,21 @@ fn push_warning(warnings: &mut Vec<String>, warning: String) {
 async fn finish_run_err_best_effort(state: &AppState, run_id: i64, error: &str, duration_ms: i64) {
     if let Err(record_err) = state.db.finish_run_err(run_id, error, duration_ms).await {
         warn!(run_id, error = %record_err, "写入失败记录时又出错了");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_rate_limit_errors() {
+        assert!(is_rate_limited(&Error::rejected(
+            "Steam 新闻 RSS 触发限流（HTTP 429），请稍后再同步"
+        )));
+        assert!(!is_rate_limited(&Error::upstream(
+            "新闻 RSS 解析失败: 没有 RSS"
+        )));
+        assert!(!is_rate_limited(&Error::network("请求超时")));
     }
 }

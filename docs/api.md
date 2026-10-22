@@ -189,7 +189,8 @@ shows new items while the pass is running. `done` counts finished feeds (success
 - A missing / delisted feed (HTTP 404), or an HTML page for an app without a community hub
   (Portal, Portal 2, …), is treated as an empty feed. Other per-game failures are reported in
   `warnings` / `failed` without failing the whole pass. Three consecutive failures stop the pass
-  early; the remaining feeds are picked up on the next run.
+  early; the remaining feeds are picked up on the next run. HTTP 429 stops the pass immediately
+  without marking that feed failed.
 - The full announcement text is stored (HTML stripped, paragraph breaks preserved) — the API does
   not truncate `summary`. The web UI shows an excerpt in the list and the full text in a modal.
 - A `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
@@ -204,8 +205,9 @@ shows new items while the pass is running. `done` counts finished feeds (success
 
 Returns the same shape as the POST response, for polling. The state is kept in memory: after a
 server restart it resets to `running: false`, while already-fetched news and coverage remain in
-SQLite. The UI polls every ~600 ms, updates the progress bar / ETA, and silently refreshes the
-current list page whenever `done` advances.
+SQLite. Any `steam_news` run left in `running` by a previous process is marked failed on startup.
+The UI polls every ~600 ms, updates the progress bar / ETA, and silently refreshes the current
+list page whenever `done` advances.
 
 ### Steam imports are per account
 

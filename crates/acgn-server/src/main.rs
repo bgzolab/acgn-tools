@@ -111,7 +111,19 @@ async fn main() -> anyhow::Result<()> {
     let steam = SteamClient::new(steam_config).context("初始化 Steam 客户端失败")?;
 
     match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(config, db, steam).await,
+        Command::Serve => {
+            // 全量新闻同步可能跑几分钟：上次进程退出时留下的 running 记录要收敛，
+            // 否则同步历史里会永远显示「进行中」。
+            match db
+                .fail_stale_news_runs("服务重启，上一轮新闻同步已中断")
+                .await
+            {
+                Ok(0) => {}
+                Ok(count) => tracing::warn!(count, "已把中断的新闻同步记录标记为失败"),
+                Err(err) => tracing::warn!(error = %err, "清理中断的新闻同步记录失败"),
+            }
+            serve(config, db, steam).await
+        }
         Command::Seed {
             steam_id,
             enrich,

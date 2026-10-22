@@ -396,13 +396,44 @@ fn resolve_html_entity(entity: &str) -> Option<char> {
         "quot" => Some('"'),
         "apos" => Some('\''),
         "nbsp" => Some(' '),
-        "mdash" => Some('—'),
-        "ndash" => Some('–'),
+        "trade" => Some('™'),
+        "copy" => Some('©'),
+        "reg" => Some('®'),
+        "deg" => Some('°'),
+        "plusmn" => Some('±'),
+        "times" => Some('×'),
+        "divide" => Some('÷'),
+        "frac12" => Some('½'),
+        "frac14" => Some('¼'),
+        "frac34" => Some('¾'),
+        "sup2" => Some('²'),
+        "sup3" => Some('³'),
+        "micro" => Some('µ'),
+        "para" => Some('¶'),
+        "sect" => Some('§'),
+        "middot" => Some('·'),
+        "bull" => Some('•'),
         "hellip" => Some('…'),
+        "ndash" => Some('–'),
+        "mdash" => Some('—'),
         "lsquo" => Some('‘'),
         "rsquo" => Some('’'),
         "ldquo" => Some('“'),
         "rdquo" => Some('”'),
+        "laquo" => Some('«'),
+        "raquo" => Some('»'),
+        "euro" => Some('€'),
+        "pound" => Some('£'),
+        "yen" => Some('¥'),
+        "cent" => Some('¢'),
+        "larr" => Some('←'),
+        "rarr" => Some('→'),
+        "uarr" => Some('↑'),
+        "darr" => Some('↓'),
+        "hearts" => Some('♥'),
+        "spades" => Some('♠'),
+        "clubs" => Some('♣'),
+        "diams" => Some('♦'),
         _ => {
             let number = entity
                 .strip_prefix("#x")
@@ -499,6 +530,14 @@ mod tests {
         assert_eq!(
             html_to_text("<p>One</p><p>Two</p>").as_deref(),
             Some("One\n\nTwo")
+        );
+    }
+
+    #[test]
+    fn decodes_common_named_html_entities() {
+        assert_eq!(
+            html_to_text("ACGN Tools&trade; &copy; 2026 &deg; 30 &middot; OK").as_deref(),
+            Some("ACGN Tools™ © 2026 ° 30 · OK")
         );
     }
 

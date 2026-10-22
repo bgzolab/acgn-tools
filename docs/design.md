@@ -400,11 +400,18 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
   (Portal, Portal 2, …), is treated as an empty feed so those entries converge instead of
   retrying forever; other failures are recorded in `news_feeds.last_error` and the old news
   stays visible. Three consecutive failures stop the pass so a dead proxy does not wait for
-  every game's timeout; the remaining feeds are picked up on the next run.
-- **The summary is full plain text.** RSS `description` is either text or escaped HTML; the
-  adapter strips tags, decodes entities and preserves paragraph breaks **without truncating**.
-  The frontend shows a clamped excerpt in the list and the complete text in a local modal, so
-  reading an announcement never requires leaving the app. Nothing is rendered as HTML.
+  every game's timeout; the remaining feeds are picked up on the next run. An HTTP 429 stops
+  the pass immediately **without** marking that feed failed, so it is not hammered again in the
+  same rate-limit window.
+- **The progress state always converges.** The background loop is wrapped against task panics:
+  `news_sync.running` is cleared and the `steam_news` run is marked failed even if the loop
+  panics. On startup, any `steam_news` run left in `running` by a previous process is marked
+  failed (`Db::fail_stale_news_runs`) so sync history never shows a permanent "running" row.
+- `summary` is full plain text: RSS `description` is HTML-stripped, common named / numeric HTML
+  entities (`&trade;`, `&copy;`, `&#x27;`, …) are decoded, paragraph breaks are preserved and
+  nothing is truncated. The list shows a clamped excerpt; clicking opens the complete text in a
+  local modal, so reading never requires leaving the app. The adapter still renders no HTML, so
+  no sanitizer is needed.
 - Each sync writes a `steam_news` row to `import_runs` (feed attempts count as `seen`, inserted /
   changed news as `added` / `updated`, failed feeds as `skipped`). When every attempted feed
   fails, the run is recorded as `failed`; an empty target list writes no run.

@@ -123,6 +123,12 @@ impl NewsSyncManager {
     pub fn finish_empty(&self, warning: String) -> NewsSyncState {
         {
             let mut state = self.lock();
+            // 空目标检查与后台任务启动之间存在并发窗口：已经在跑的一轮不能被
+            // 另一笔请求的「没有目标」清零，直接返回当前进度。
+            if state.running {
+                drop(state);
+                return self.snapshot();
+            }
             *state = NewsSyncState {
                 running: false,
                 finished_at: Some(Utc::now()),
@@ -172,5 +178,17 @@ mod tests {
         assert!(!state.running);
         assert_eq!((state.total, state.done, state.items_added), (0, 0, 0));
         assert_eq!(state.warnings, vec!["没有目标"]);
+    }
+
+    #[test]
+    fn finish_empty_does_not_clobber_a_running_sync() {
+        let manager = NewsSyncManager::default();
+        assert!(manager.start(5));
+        manager.record_success(1, 0, 0);
+
+        let state = manager.finish_empty("没有目标".to_string());
+        assert!(state.running, "运行中的同步不能被并发请求清零");
+        assert_eq!((state.total, state.done, state.succeeded), (5, 1, 1));
+        assert!(state.warnings.is_empty());
     }
 }
