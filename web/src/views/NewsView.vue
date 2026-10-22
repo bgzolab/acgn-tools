@@ -21,17 +21,20 @@ const error = ref("");
 const perPage = 20;
 const currentPage = ref(1);
 const selected = ref<GameNews | null>(null);
+const starting = ref(false);
 
 let syncTimer: number | undefined;
 let refreshing = false;
 let disposed = false;
+/** 单调递增：startSync / 卸载 / 重新挂载都会让旧的异步轮询失效。 */
+let syncGeneration = 0;
 
 const items = computed(() => page.value?.items ?? []);
 const total = computed(() => page.value?.total ?? 0);
 const totalPages = computed(() => page.value?.total_pages ?? 1);
 const hasOwned = computed(() => (status.value?.owned_games ?? 0) > 0);
 const pending = computed(() => status.value?.pending_games ?? 0);
-const syncing = computed(() => syncState.value?.running ?? false);
+const syncing = computed(() => starting.value || (syncState.value?.running ?? false));
 
 const progressPercent = computed(() => {
   const state = syncState.value;
@@ -104,10 +107,16 @@ async function refreshWhileSyncing() {
 }
 
 function stopPolling() {
+  syncGeneration += 1;
   if (syncTimer !== undefined) {
     window.clearTimeout(syncTimer);
     syncTimer = undefined;
   }
+}
+
+function schedulePoll(generation: number, delayMs = 600) {
+  if (disposed || generation !== syncGeneration) return;
+  syncTimer = window.setTimeout(() => void pollSync(generation), delayMs);
 }
 
 function finishToast(state: NewsSyncState) {
@@ -121,11 +130,12 @@ function finishToast(state: NewsSyncState) {
   pushToast(tone, "新闻同步完成", parts.join(" · "));
 }
 
-async function pollSync() {
-  if (disposed) return;
+async function pollSync(generation: number) {
+  if (disposed || generation !== syncGeneration) return;
   try {
     const next = await getNewsSyncStatus();
-    if (disposed) return;
+    // 请求挂起期间可能已开始新一轮 / 已离开页面：旧响应直接丢弃。
+    if (disposed || generation !== syncGeneration) return;
     // 轮询恢复后清掉上一次网络错误，避免错误横幅一直挂着。
     error.value = "";
     const previousDone = syncState.value?.done ?? 0;
@@ -136,25 +146,31 @@ async function pollSync() {
     }
 
     if (next.running) {
-      syncTimer = window.setTimeout(pollSync, 600);
+      schedulePoll(generation, 600);
     } else {
-      syncTimer = undefined;
+      if (syncTimer !== undefined) {
+        window.clearTimeout(syncTimer);
+        syncTimer = undefined;
+      }
       await load(currentPage.value);
-      if (!disposed && next.done > 0) finishToast(next);
+      if (disposed || generation !== syncGeneration) return;
+      if (next.done > 0) finishToast(next);
     }
   } catch (err) {
-    if (disposed) return;
+    if (disposed || generation !== syncGeneration) return;
     // 后端短暂不可达时继续轮询，恢复后进度会自己接上。
     const { title, message } = errorText(err);
     error.value = `${title}：${message}`;
-    syncTimer = window.setTimeout(pollSync, 1500);
+    schedulePoll(generation, 1500);
   }
 }
 
 async function startSync() {
   if (syncing.value) return;
+  // 让任何挂起中的旧轮询失效，再开启新一轮。
   stopPolling();
   error.value = "";
+  starting.value = true;
   try {
     const initial = await startNewsSync();
     if (disposed) return;
@@ -163,7 +179,7 @@ async function startSync() {
       // 新条目从第 1 页开始出现；用户仍可继续翻页，轮询会刷新当前页。
       currentPage.value = 1;
       void refreshWhileSyncing();
-      syncTimer = window.setTimeout(pollSync, 600);
+      schedulePoll(syncGeneration, 600);
     } else {
       await load(currentPage.value);
       const warning = initial.warnings[0] ?? "没有可同步的游戏";
@@ -173,6 +189,8 @@ async function startSync() {
     if (disposed) return;
     const { title, message } = errorText(err);
     pushToast("err", title, message);
+  } finally {
+    starting.value = false;
   }
 }
 
@@ -185,12 +203,13 @@ onMounted(async () => {
   void meta.load();
   await load(1);
   if (disposed) return;
+  stopPolling();
   try {
     const current = await getNewsSyncStatus();
     if (disposed) return;
     syncState.value = current;
     if (current.running) {
-      syncTimer = window.setTimeout(pollSync, 300);
+      schedulePoll(syncGeneration, 300);
     }
   } catch {
     // 进度接口不可用时不影响已有列表。

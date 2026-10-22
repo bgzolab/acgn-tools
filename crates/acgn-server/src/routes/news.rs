@@ -222,10 +222,8 @@ async fn run_news_sync_inner(
 }
 
 /// 是否是 Steam 的 429 限流：这类错误应该终止本轮，而不是把游戏记成失败。
-///
-/// 只匹配稳定的 `HTTP 429` 片段，避免 appid / URL 里的数字或普通「限流」字样误判。
 fn is_rate_limited(err: &Error) -> bool {
-    matches!(err, Error::SourceRejected(message) if message.contains("HTTP 429"))
+    matches!(err, Error::RateLimited(_))
 }
 
 /// 抓取 + 落库一个 feed；状态记账失败只记 warning，不影响新闻入库。
@@ -305,8 +303,8 @@ mod tests {
 
     #[test]
     fn detects_rate_limit_errors() {
-        assert!(is_rate_limited(&Error::rejected(
-            "Steam 新闻 RSS 返回 HTTP 429（限流），请稍后再同步"
+        assert!(is_rate_limited(&Error::rate_limited(
+            "Steam 新闻 RSS 返回 HTTP 429，请稍后再同步"
         )));
         assert!(!is_rate_limited(&Error::upstream(
             "新闻 RSS 解析失败: 没有 RSS"
@@ -316,7 +314,7 @@ mod tests {
             !is_rate_limited(&Error::rejected(
                 "Steam 新闻 RSS 返回 HTTP 403（https://steamcommunity.com/games/24290/rss/）"
             )),
-            "appid / URL 里的数字不能被当成限流"
+            "其它 4xx 不能被当成限流"
         );
     }
 }

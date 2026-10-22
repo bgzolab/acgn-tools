@@ -49,8 +49,8 @@ impl SteamClient {
             });
         }
         if status.as_u16() == 429 {
-            return Err(Error::rejected(
-                "Steam 新闻 RSS 触发限流（HTTP 429），请稍后再同步",
+            return Err(Error::rate_limited(
+                "Steam 新闻 RSS 返回 HTTP 429，请稍后再同步",
             ));
         }
         if !status.is_success() {

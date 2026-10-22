@@ -271,6 +271,11 @@ impl Db {
             if guid.is_empty() || title.is_empty() || url.is_empty() {
                 continue;
             }
+            // 统一入口防御：fixture 也可以手写，非 HTTP(S) 链接绝不能进库
+            // （前端会把它直接渲染成 href）。
+            if !(url.starts_with("https://") || url.starts_with("http://")) {
+                continue;
+            }
             // 同一个 feed 内偶尔会重复出现同一 guid：只写第一次。
             if seen.insert(guid, ()).is_some() {
                 continue;

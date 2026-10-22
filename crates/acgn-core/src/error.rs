@@ -28,6 +28,10 @@ pub enum Error {
     #[error("数据源拒绝: {0}")]
     SourceRejected(String),
 
+    /// 上游触发限流（HTTP 429）：调用方应停止当前批处理，稍后再试
+    #[error("触发限流: {0}")]
+    RateLimited(String),
+
     /// 存储层错误
     #[error("存储错误: {0}")]
     Storage(String),
@@ -45,7 +49,7 @@ impl Error {
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
-            Error::Network(_) | Error::SourceRejected(_) | Error::Other(_)
+            Error::Network(_) | Error::SourceRejected(_) | Error::RateLimited(_) | Error::Other(_)
         )
     }
 
@@ -57,6 +61,7 @@ impl Error {
             Error::Network(_) => "检查服务器出网/代理设置",
             Error::Upstream(_) => "上游接口可能已变更，请反馈",
             Error::SourceRejected(_) => "可能是隐私设置或触发了限流，稍后重试",
+            Error::RateLimited(_) => "稍后重试",
             Error::Storage(_) => "数据库异常，检查磁盘与文件权限",
             Error::Other(_) => "未知错误",
         }
@@ -70,6 +75,7 @@ impl Error {
             Error::Network(_) => "network",
             Error::Upstream(_) => "upstream",
             Error::SourceRejected(_) => "source_rejected",
+            Error::RateLimited(_) => "rate_limited",
             Error::Storage(_) => "storage",
             Error::Other(_) => "other",
         }
@@ -102,6 +108,11 @@ impl Error {
 
     pub fn rejected(err: impl fmt::Display) -> Self {
         Error::SourceRejected(err.to_string())
+    }
+
+    /// 上游限流（HTTP 429）：调用方应停止当前批处理，稍后重试。
+    pub fn rate_limited(err: impl fmt::Display) -> Self {
+        Error::RateLimited(err.to_string())
     }
 }
 

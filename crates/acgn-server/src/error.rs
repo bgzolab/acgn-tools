@@ -22,6 +22,7 @@ impl ApiError {
             Error::Invalid(_) => StatusCode::BAD_REQUEST,
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::SourceRejected(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            Error::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             Error::Network(_) | Error::Upstream(_) => StatusCode::BAD_GATEWAY,
             Error::Storage(_) | Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }

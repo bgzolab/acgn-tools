@@ -290,6 +290,32 @@ async fn status_tracks_success_pending_and_failures() {
 }
 
 #[tokio::test]
+async fn store_news_rejects_non_http_urls() {
+    let db = setup().await;
+    let account_id = account(&db).await;
+    import(
+        &db,
+        Some(account_id),
+        MissingScope::Library,
+        &[library_item("100", "Owned", 0)],
+    )
+    .await;
+    let id = game_id(&db, "100").await;
+
+    let mut entry = news("1", "Bad link", 0);
+    entry.url = "javascript:alert(1)".to_string();
+    let counts = db
+        .store_news(id, "schinese", &[entry], Utc::now())
+        .await
+        .unwrap();
+    assert_eq!(counts.added, 0, "非 HTTP(S) 链接不能入库");
+    assert_eq!(
+        db.list_news("schinese", None, 1, 10).await.unwrap().total,
+        0
+    );
+}
+
+#[tokio::test]
 async fn huge_page_does_not_overflow() {
     let db = setup().await;
     let page = db

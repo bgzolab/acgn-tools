@@ -17,7 +17,8 @@ Runnable samples for every endpoint live in [`api.http`](api.http) (VS Code REST
 |---|---|---|
 | 400 | `invalid` | malformed query / body / path (bad enum value, non-numeric id, …) |
 | 404 | `not_found` | unknown resource or route |
-| 422 | `source_rejected` | upstream refused (private profile, rate limit) — retry later |
+| 422 | `source_rejected` | upstream refused (private profile, bad key, …) — retry later |
+| 429 | `rate_limited` | upstream rate limit — back off and retry later |
 | 502 | `network` / `upstream` | upstream unreachable or returned something unparsable |
 | 500 | `storage` / `other` | database or unexpected failure |
 
