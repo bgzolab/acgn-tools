@@ -138,7 +138,13 @@ async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
         };
         if let Err(record_err) = state
             .db
-            .finish_run_err_with_counts(run_id, counts, error, started.elapsed().as_millis() as i64)
+            .finish_run_err_with_counts(
+                run_id,
+                counts,
+                &snapshot.warnings,
+                error,
+                started.elapsed().as_millis() as i64,
+            )
             .await
         {
             warn!(run_id, error = %record_err, "写入失败记录时又出错了");
@@ -231,7 +237,7 @@ async fn run_news_sync_inner(
             .unwrap_or_else(|| "所有新闻源请求失败".to_string());
         if let Err(err) = state
             .db
-            .finish_run_err_with_counts(run_id, counts, &reason, duration_ms)
+            .finish_run_err_with_counts(run_id, counts, &warnings, &reason, duration_ms)
             .await
         {
             warn!(run_id, error = %err, "写入失败记录时又出错了");
@@ -242,7 +248,7 @@ async fn run_news_sync_inner(
         .await
         && let Err(record_err) = state
             .db
-            .finish_run_err_with_counts(run_id, counts, &err.to_string(), duration_ms)
+            .finish_run_err_with_counts(run_id, counts, &warnings, &err.to_string(), duration_ms)
             .await
     {
         warn!(run_id, error = %record_err, "写入失败记录时又出错了");
@@ -272,15 +278,12 @@ async fn fetch_and_store(
         .into_iter()
         .map(|warning| format!("{}: {warning}", target.title))
         .collect::<Vec<_>>();
+    // item_count 用「实际入库条数」，而不是 feed 原始条数：坏 URL / 空字段 /
+    // 重复 guid 会被 store_news 跳过，写原始条数会让可观测指标虚高。
+    let stored = counts.added + counts.updated + counts.unchanged;
     if let Err(err) = state
         .db
-        .mark_news_feed_success(
-            target.game_id,
-            language,
-            feed_url,
-            fetch.entries.len() as i64,
-            Utc::now(),
-        )
+        .mark_news_feed_success(target.game_id, language, feed_url, stored, Utc::now())
         .await
     {
         // 新闻已经落库，状态记账失败不该让整轮同步失败。

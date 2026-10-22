@@ -168,21 +168,23 @@ impl Db {
 
     /// 运行失败收尾。
     pub async fn finish_run_err(&self, run_id: i64, error: &str, duration_ms: i64) -> Result<()> {
-        self.finish_run_err_with_counts(run_id, RunCounts::default(), error, duration_ms)
+        self.finish_run_err_with_counts(run_id, RunCounts::default(), &[], error, duration_ms)
             .await
     }
 
-    /// 运行失败收尾，同时保留已经处理过的计数（例如「全部 feed 失败」的场景）。
+    /// 运行失败收尾，同时保留已经处理过的计数与告警。
     pub async fn finish_run_err_with_counts(
         &self,
         run_id: i64,
         counts: RunCounts,
+        warnings: &[String],
         error: &str,
         duration_ms: i64,
     ) -> Result<()> {
         sqlx::query(
             "UPDATE import_runs SET status = 'failed', seen = ?, added = ?, updated = ?,
-                unchanged = ?, skipped = ?, missing = ?, error = ?, finished_at = ?, duration_ms = ?
+                unchanged = ?, skipped = ?, missing = ?, warnings = ?, error = ?,
+                finished_at = ?, duration_ms = ?
              WHERE id = ?",
         )
         .bind(counts.seen)
@@ -191,6 +193,7 @@ impl Db {
         .bind(counts.unchanged)
         .bind(counts.skipped)
         .bind(counts.missing)
+        .bind(strings_json(warnings))
         .bind(error)
         .bind(Utc::now())
         .bind(duration_ms)

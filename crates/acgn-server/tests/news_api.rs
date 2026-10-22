@@ -343,6 +343,12 @@ async fn missing_news_fixture_marks_feed_failed_and_keeps_archive() {
     assert_eq!(runs[0]["seen"], 1);
     assert_eq!(runs[0]["skipped"], 1);
     assert!(
+        runs[0]["warnings"]
+            .as_array()
+            .is_some_and(|warnings| !warnings.is_empty()),
+        "失败运行也必须保留逐游戏告警：{runs}"
+    );
+    assert!(
         runs[0]["error"]
             .as_str()
             .is_some_and(|error| error.contains("news.json")),

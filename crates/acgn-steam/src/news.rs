@@ -319,6 +319,8 @@ fn numeric_char(value: u32) -> Option<char> {
 }
 
 fn cp1252_char(value: u32) -> Option<char> {
+    // 未定义位（0x81/8D/8F/90/9D）故意返回 None → U+FFFD，而不是 WHATWG 表里的
+    // 同名 C1 控制符：与严格表格略有偏差，但避免把不可见控制字符写进正文。
     Some(match value {
         0x80 => '€',
         0x82 => '‚',
