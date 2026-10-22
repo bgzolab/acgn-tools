@@ -121,14 +121,19 @@ function schedulePoll(generation: number, delayMs = 600) {
 }
 
 function finishToast(state: NewsSyncState) {
-  const tone = state.failed > 0 ? "warn" : "ok";
+  const incomplete = state.done < state.total;
+  const tone = state.failed > 0 || incomplete ? "warn" : "ok";
   const parts = [
-    `检查 ${state.succeeded} 个游戏`,
+    `处理 ${state.done} / ${state.total} 个游戏`,
     `新增 ${state.items_added} / 更新 ${state.items_updated}`,
     state.failed > 0 ? `失败 ${state.failed}` : "",
     `用时 ${formatDuration(state.elapsed_ms)}`,
   ].filter(Boolean);
-  pushToast(tone, "新闻同步完成", parts.join(" · "));
+  pushToast(
+    tone,
+    incomplete ? "新闻同步未完成" : "新闻同步完成",
+    parts.join(" · "),
+  );
 }
 
 async function pollSync(generation: number) {
