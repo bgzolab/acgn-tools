@@ -289,13 +289,11 @@ fn parse_pub_date(raw: &str) -> Option<DateTime<Utc>> {
 
 /// XML 实体（`&amp;` / `&#x27;`）→ 字符；未知实体保留原文。
 fn resolve_xml_entity(entity: &str) -> String {
-    // 数字实体不依赖 quick-xml 版本行为，显式兜底（标题 / guid / 时间字段也会用到）。
-    if let Some(ch) = parse_numeric_entity(entity) {
-        return ch.to_string();
-    }
-    quick_xml::escape::unescape(&format!("&{entity};"))
-        .map(|value| value.into_owned())
-        .unwrap_or_else(|_| format!("&{entity};"))
+    // XML 预定义实体、常用 HTML 命名实体与数字引用统一走同一张表；
+    // 未知实体保留原文，避免悄悄吞掉内容。
+    resolve_html_entity(entity)
+        .map(|ch| ch.to_string())
+        .unwrap_or_else(|| format!("&{entity};"))
 }
 
 /// 解析 `&#39;` / `&#x27;` 形式的字符引用。
@@ -654,6 +652,18 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolves_named_entities_in_title() {
+        let xml = r#"<rss><channel><item>
+            <title>Steam &trade; Fest&trade; &copy; 2026</title>
+            <link>https://x/1</link>
+            <guid>https://x/1</guid>
+            <pubDate>Fri, 18 Aug 2023 02:30:41 +0000</pubDate>
+        </item></channel></rss>"#;
+        let entries = parse_news_feed(xml).expect("feed 应能解析");
+        assert_eq!(entries[0].title, "Steam ™ Fest™ © 2026");
     }
 
     #[test]

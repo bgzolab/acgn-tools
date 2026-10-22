@@ -414,8 +414,9 @@ There is no bulk endpoint. The `cc` / `l` query follows `STEAM_COUNTRY` / `STEAM
   local modal, so reading never requires leaving the app. The adapter renders no HTML, and both
   the live parser and `Db::store_news` reject non-HTTP(S) URLs, so no sanitizer is needed.
 - Each sync writes a `steam_news` row to `import_runs` (feed attempts count as `seen`, inserted /
-  changed news as `added` / `updated`, failed feeds as `skipped`). When every attempted feed
-  fails, the run is recorded as `failed`; an empty target list writes no run.
+  changed news as `added` / `updated`, failed feeds + the rate-limited aborted feed as `skipped`).
+  When every attempted feed fails, the run is recorded as `failed`; an empty target list writes
+  no run.
 - Fixture mode reads `fixtures/steam/news.json` (`{ "news": { "<appid>": [NewsEntry…] } }`).
   Missing file → explicit error; appid missing from the file → empty feed with a warning. The
   fixture generator writes the latest five posts per appid from the live RSS, with full text.

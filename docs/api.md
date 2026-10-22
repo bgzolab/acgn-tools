@@ -198,7 +198,8 @@ shows new items while the pass is running. `done` counts finished feeds (success
 - The full announcement text is stored (HTML stripped, paragraph breaks preserved) — the API does
   not truncate `summary`. The web UI shows an excerpt in the list and the full text in a modal.
 - A `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
-  `unchanged` = news rows, `skipped` = failed feeds). If every attempted feed fails the run is
+  `unchanged` = news rows, `skipped` = failed feeds + the rate-limited feed that stopped the pass).
+  If every attempted feed fails the run is
   marked `failed`. With no owned games, `running` is `false`, `total` is `0` and a warning is
   returned; no run row is written.
 - RSS request language / region follow `STEAM_LANGUAGE` / `STEAM_COUNTRY` (default
