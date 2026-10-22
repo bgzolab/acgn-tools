@@ -52,7 +52,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
     dir
 }
 
-async fn test_app(tag: &str) -> (Router, Db) {
+async fn test_app(tag: &str) -> (Router, Db, AppState) {
     let db = Db::memory().await.expect("内存库应能创建");
     db.migrate().await.expect("迁移应成功");
 
@@ -69,8 +69,9 @@ async fn test_app(tag: &str) -> (Router, Db) {
         steam: steam_config.clone(),
     };
     let steam = SteamClient::new(steam_config).expect("Steam 客户端应能创建");
-    let app = build_app(AppState::new(db.clone(), steam, config));
-    (app, db)
+    let state = AppState::new(db.clone(), steam, config);
+    let app = build_app(state.clone());
+    (app, db, state)
 }
 
 async fn body_json(response: axum::response::Response) -> Value {
@@ -191,7 +192,7 @@ async fn wait_for_sync(app: &Router) -> Value {
 
 #[tokio::test]
 async fn sync_and_list_news_for_owned_games_only() {
-    let (app, db) = test_app("flow").await;
+    let (app, db, _state) = test_app("flow").await;
     let (_, owned, _) = seed(&db).await;
 
     let (status, body) = send(&app, get("/api/news")).await;
@@ -261,8 +262,36 @@ async fn sync_and_list_news_for_owned_games_only() {
 }
 
 #[tokio::test]
+async fn start_while_running_returns_snapshot_without_new_run() {
+    let (app, db, state) = test_app("duplicate").await;
+    seed(&db).await;
+
+    // 模拟已经在跑的一轮（total=7）；POST 不应再启动一轮、也不应写新的运行记录。
+    assert!(state.news_sync.start(7));
+    let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["running"], true);
+    assert_eq!(
+        body["total"], 7,
+        "应返回已有一轮的进度，而不是按 1 个目标重新开始"
+    );
+
+    let (status, runs) = send(&app, get("/api/imports?limit=20")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        runs.as_array()
+            .unwrap()
+            .iter()
+            .all(|run| run["mode"] != "steam_news"),
+        "重复 POST 不应产生新的 steam_news 运行记录：{runs}"
+    );
+
+    state.news_sync.finish();
+}
+
+#[tokio::test]
 async fn sync_without_owned_games_reports_a_warning() {
-    let (app, _db) = test_app("empty").await;
+    let (app, _db, _state) = test_app("empty").await;
     let (status, body) = send(&app, json_request("POST", "/api/news/sync", &json!({}))).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["running"], false);

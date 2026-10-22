@@ -221,7 +221,7 @@ pub struct GameListQuery {
 
 impl GameListQuery {
     pub fn page(&self) -> i64 {
-        self.page.unwrap_or(1).max(1)
+        self.page.unwrap_or(1).clamp(1, 1_000_000)
     }
 
     pub fn per_page(&self) -> i64 {
@@ -229,7 +229,7 @@ impl GameListQuery {
     }
 
     pub fn offset(&self) -> i64 {
-        (self.page() - 1) * self.per_page()
+        (self.page() - 1).saturating_mul(self.per_page())
     }
 }
 
@@ -244,7 +244,7 @@ pub struct NewsListQuery {
 
 impl NewsListQuery {
     pub fn page(&self) -> i64 {
-        self.page.unwrap_or(1).max(1)
+        self.page.unwrap_or(1).clamp(1, 1_000_000)
     }
 
     pub fn per_page(&self) -> i64 {
@@ -252,7 +252,7 @@ impl NewsListQuery {
     }
 
     pub fn offset(&self) -> i64 {
-        (self.page() - 1) * self.per_page()
+        (self.page() - 1).saturating_mul(self.per_page())
     }
 }
 

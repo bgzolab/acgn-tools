@@ -124,14 +124,15 @@ impl Db {
         page: i64,
         per_page: i64,
     ) -> Result<Page<GameWithEntry>> {
-        let page = page.max(1);
+        let page = page.clamp(1, 1_000_000);
         let per_page = per_page.clamp(1, 500);
+        let offset = (page - 1).saturating_mul(per_page);
 
         let mut qb = QueryBuilder::new(SELECT_GAME_ENTRY);
         apply_filters(&mut qb, filters);
         qb.push(order_sql(sort));
         qb.push(" LIMIT ").push_bind(per_page);
-        qb.push(" OFFSET ").push_bind((page - 1) * per_page);
+        qb.push(" OFFSET ").push_bind(offset);
 
         let rows: Vec<GameEntryRow> = qb.build_query_as().fetch_all(&self.pool).await.db()?;
 

@@ -290,6 +290,17 @@ async fn status_tracks_success_pending_and_failures() {
 }
 
 #[tokio::test]
+async fn huge_page_does_not_overflow() {
+    let db = setup().await;
+    let page = db
+        .list_news("schinese", None, i64::MAX, 100)
+        .await
+        .expect("超大页码不应 panic / 溢出");
+    assert_eq!(page.page, 1_000_000, "页码应被夹到安全上限");
+    assert_eq!(page.items.len(), 0);
+}
+
+#[tokio::test]
 async fn stale_news_runs_are_marked_failed() {
     let db = setup().await;
     let news_run = db

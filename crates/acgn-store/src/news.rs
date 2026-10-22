@@ -131,8 +131,9 @@ impl Db {
         page: i64,
         per_page: i64,
     ) -> Result<Page<GameNews>> {
-        let page = page.max(1);
+        let page = page.clamp(1, 1_000_000);
         let per_page = per_page.clamp(1, 100);
+        let offset = (page - 1).saturating_mul(per_page);
 
         let mut qb = QueryBuilder::new(
             "SELECT n.id AS id, n.game_id AS game_id, g.source AS source,
@@ -152,7 +153,7 @@ impl Db {
         qb.push(" ORDER BY n.published_at DESC, n.id DESC LIMIT ")
             .push_bind(per_page)
             .push(" OFFSET ")
-            .push_bind((page - 1) * per_page);
+            .push_bind(offset);
 
         let rows: Vec<GameNewsRow> = qb.build_query_as().fetch_all(&self.pool).await.db()?;
 

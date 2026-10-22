@@ -272,9 +272,23 @@ fn parse_pub_date(raw: &str) -> Option<DateTime<Utc>> {
 
 /// XML 实体（`&amp;` / `&#x27;`）→ 字符；未知实体保留原文。
 fn resolve_xml_entity(entity: &str) -> String {
+    // 数字实体不依赖 quick-xml 版本行为，显式兜底（标题 / guid / 时间字段也会用到）。
+    if let Some(ch) = parse_numeric_entity(entity) {
+        return ch.to_string();
+    }
     quick_xml::escape::unescape(&format!("&{entity};"))
         .map(|value| value.into_owned())
         .unwrap_or_else(|_| format!("&{entity};"))
+}
+
+/// 解析 `&#39;` / `&#x27;` 形式的字符引用。
+fn parse_numeric_entity(entity: &str) -> Option<char> {
+    let number = entity
+        .strip_prefix("#x")
+        .or_else(|| entity.strip_prefix("#X"))
+        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+        .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse().ok()))?;
+    char::from_u32(number)
 }
 
 /// HTML → 纯文本：块级标签保留换行，其余标签剥掉，再解码 HTML 实体。
@@ -434,14 +448,7 @@ fn resolve_html_entity(entity: &str) -> Option<char> {
         "spades" => Some('♠'),
         "clubs" => Some('♣'),
         "diams" => Some('♦'),
-        _ => {
-            let number = entity
-                .strip_prefix("#x")
-                .or_else(|| entity.strip_prefix("#X"))
-                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                .or_else(|| entity.strip_prefix('#').and_then(|dec| dec.parse().ok()))?;
-            char::from_u32(number)
-        }
+        _ => parse_numeric_entity(entity),
     }
 }
 
@@ -531,6 +538,19 @@ mod tests {
             html_to_text("<p>One</p><p>Two</p>").as_deref(),
             Some("One\n\nTwo")
         );
+    }
+
+    #[test]
+    fn resolves_numeric_entities_in_title_and_guid() {
+        let xml = r#"<rss><channel><item>
+            <title>Title &#39;quoted&#39; &#x26; more</title>
+            <link>https://x/1</link>
+            <guid>https://x/1</guid>
+            <pubDate>Fri, 18 Aug 2023 02:30:41 +0000</pubDate>
+        </item></channel></rss>"#;
+        let entries = parse_news_feed(xml).expect("feed 应能解析");
+        assert_eq!(entries[0].title, "Title 'quoted' & more");
+        assert_eq!(entries[0].guid, "https://x/1");
     }
 
     #[test]
