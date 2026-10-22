@@ -24,6 +24,7 @@ const selected = ref<GameNews | null>(null);
 
 let syncTimer: number | undefined;
 let refreshing = false;
+let disposed = false;
 
 const items = computed(() => page.value?.items ?? []);
 const total = computed(() => page.value?.total ?? 0);
@@ -121,8 +122,12 @@ function finishToast(state: NewsSyncState) {
 }
 
 async function pollSync() {
+  if (disposed) return;
   try {
     const next = await getNewsSyncStatus();
+    if (disposed) return;
+    // 轮询恢复后清掉上一次网络错误，避免错误横幅一直挂着。
+    error.value = "";
     const previousDone = syncState.value?.done ?? 0;
     syncState.value = next;
 
@@ -135,9 +140,10 @@ async function pollSync() {
     } else {
       syncTimer = undefined;
       await load(currentPage.value);
-      if (next.done > 0) finishToast(next);
+      if (!disposed && next.done > 0) finishToast(next);
     }
   } catch (err) {
+    if (disposed) return;
     // 后端短暂不可达时继续轮询，恢复后进度会自己接上。
     const { title, message } = errorText(err);
     error.value = `${title}：${message}`;
@@ -151,6 +157,7 @@ async function startSync() {
   error.value = "";
   try {
     const initial = await startNewsSync();
+    if (disposed) return;
     syncState.value = initial;
     if (initial.running) {
       // 新条目从第 1 页开始出现；用户仍可继续翻页，轮询会刷新当前页。
@@ -163,6 +170,7 @@ async function startSync() {
       pushToast("warn", "没有开始同步", warning);
     }
   } catch (err) {
+    if (disposed) return;
     const { title, message } = errorText(err);
     pushToast("err", title, message);
   }
@@ -176,8 +184,10 @@ async function goPage(target: number) {
 onMounted(async () => {
   void meta.load();
   await load(1);
+  if (disposed) return;
   try {
     const current = await getNewsSyncStatus();
+    if (disposed) return;
     syncState.value = current;
     if (current.running) {
       syncTimer = window.setTimeout(pollSync, 300);
@@ -187,7 +197,10 @@ onMounted(async () => {
   }
 });
 
-onUnmounted(stopPolling);
+onUnmounted(() => {
+  disposed = true;
+  stopPolling();
+});
 </script>
 
 <template>

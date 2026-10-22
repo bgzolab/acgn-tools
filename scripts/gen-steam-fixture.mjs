@@ -537,7 +537,9 @@ async function main() {
   );
   await writeLibraryFile(wishlist);
   try {
-    await writeNewsFile(Object.keys(wishlist));
+    // 刚写完 library.json：完整生成也用「库存 appid」抓新闻，和 --news-only 保持一致，
+    // 避免只覆盖愿望单、漏掉仅库存拥有的游戏。
+    await writeNewsFile(await readExistingAppids());
   } catch (error) {
     // 新闻是附加样例：RSS 全都失败时保留旧 news.json，不让整次 fixture 生成失败
     console.warn(`⚠ news.json 未更新：${error.message}`);
