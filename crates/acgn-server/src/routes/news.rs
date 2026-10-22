@@ -127,8 +127,22 @@ async fn run_news_sync(state: AppState, targets: Vec<NewsTarget>) {
     if outcome.is_err() {
         let error = "新闻同步任务异常终止（任务 panic）";
         state.news_sync.push_warning(error.to_string());
-        finish_run_err_best_effort(&state, run_id, error, started.elapsed().as_millis() as i64)
-            .await;
+        let snapshot = state.news_sync.snapshot();
+        let counts = RunCounts {
+            seen: snapshot.done,
+            added: snapshot.items_added,
+            updated: snapshot.items_updated,
+            unchanged: snapshot.items_unchanged,
+            skipped: snapshot.failed,
+            missing: 0,
+        };
+        if let Err(record_err) = state
+            .db
+            .finish_run_err_with_counts(run_id, counts, error, started.elapsed().as_millis() as i64)
+            .await
+        {
+            warn!(run_id, error = %record_err, "写入失败记录时又出错了");
+        }
     }
 
     state.news_sync.finish();
@@ -226,8 +240,12 @@ async fn run_news_sync_inner(
         .db
         .finish_run_ok(run_id, counts, &warnings, duration_ms)
         .await
+        && let Err(record_err) = state
+            .db
+            .finish_run_err_with_counts(run_id, counts, &err.to_string(), duration_ms)
+            .await
     {
-        finish_run_err_best_effort(state, run_id, &err.to_string(), duration_ms).await;
+        warn!(run_id, error = %record_err, "写入失败记录时又出错了");
     }
 }
 
@@ -298,12 +316,6 @@ async fn record_feed_failure(
 fn push_warning(warnings: &mut Vec<String>, warning: String) {
     if warnings.len() < 12 {
         warnings.push(warning);
-    }
-}
-
-async fn finish_run_err_best_effort(state: &AppState, run_id: i64, error: &str, duration_ms: i64) {
-    if let Err(record_err) = state.db.finish_run_err(run_id, error, duration_ms).await {
-        warn!(run_id, error = %record_err, "写入失败记录时又出错了");
     }
 }
 

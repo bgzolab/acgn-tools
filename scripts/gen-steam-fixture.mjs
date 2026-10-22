@@ -295,13 +295,23 @@ function decodeXmlEntities(value) {
   });
 }
 
-/** 取一个简单标签的文本，支持 CDATA 与属性（如 `<guid isPermaLink="true">`）。 */
+/** 取一个简单标签的文本；CDATA 保留原文，非 CDATA 部分解一层 XML 实体。 */
 function readTag(block, name) {
   const match = block.match(
     new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, "i"),
   );
   if (!match) return "";
-  return decodeXmlEntities(match[1].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")).trim();
+
+  let out = "";
+  let rest = match[1];
+  while (true) {
+    const cdata = rest.match(/^([\s\S]*?)<!\[CDATA\[([\s\S]*?)\]\]>/);
+    if (!cdata) break;
+    out += decodeXmlEntities(cdata[1]) + cdata[2];
+    rest = rest.slice(cdata[0].length);
+  }
+  out += decodeXmlEntities(rest);
+  return out.trim();
 }
 
 /** 与 Rust 侧一致的剥标签扫描：纯文本里的 `<`（如 "2 < 3"）不当标签。 */
