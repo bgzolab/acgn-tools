@@ -40,26 +40,50 @@ struct AchievementRow {
 }
 
 impl Db {
-    /// 取一批待检查成就的条目（`source_playtime_minutes` 非空 = 库存同步见过的条目）。
+    /// 取一批待检查成就的条目。
+    ///
+    /// 不带账号时：`source_playtime_minutes` 非空 = 库存同步见过的条目（历史口径）。
+    /// 带账号时：只取该账号库存里的条目（`game_accounts.source_playtime_minutes` 非空），
+    /// 避免检查别的账号才拥有的游戏。
     ///
     /// 排序：从没查过的优先，其次最久没查的优先。
     pub async fn pending_achievements(
         &self,
         source: Source,
+        account_id: Option<i64>,
         limit: i64,
     ) -> Result<Vec<PendingAchievement>> {
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT g.id, g.external_id, g.title
-             FROM games g JOIN library_entries e ON e.game_id = g.id
-             WHERE g.source = ? AND e.source_playtime_minutes IS NOT NULL
-             ORDER BY e.achievements_checked_at IS NULL DESC, e.achievements_checked_at ASC, g.id ASC
-             LIMIT ?",
-        )
-        .bind(source.as_str())
-        .bind(limit.clamp(1, 500))
-        .fetch_all(&self.pool)
-        .await
-        .db()?;
+        let limit = limit.clamp(1, 500);
+        let rows: Vec<(i64, String, String)> = match account_id {
+            Some(account_id) => sqlx::query_as(
+                "SELECT g.id, g.external_id, g.title
+                 FROM games g
+                 JOIN library_entries e ON e.game_id = g.id
+                 JOIN game_accounts ga ON ga.game_id = g.id AND ga.account_id = ?
+                      AND ga.source_playtime_minutes IS NOT NULL
+                 WHERE g.source = ?
+                 ORDER BY e.achievements_checked_at IS NULL DESC, e.achievements_checked_at ASC, g.id ASC
+                 LIMIT ?",
+            )
+            .bind(account_id)
+            .bind(source.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .db()?,
+            None => sqlx::query_as(
+                "SELECT g.id, g.external_id, g.title
+                 FROM games g JOIN library_entries e ON e.game_id = g.id
+                 WHERE g.source = ? AND e.source_playtime_minutes IS NOT NULL
+                 ORDER BY e.achievements_checked_at IS NULL DESC, e.achievements_checked_at ASC, g.id ASC
+                 LIMIT ?",
+            )
+            .bind(source.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+            .db()?,
+        };
 
         Ok(rows
             .into_iter()
@@ -72,17 +96,36 @@ impl Db {
     }
 
     /// 还没检查过成就的条目数（前端用来提示「还有 N 个，再点一次」）。
-    pub async fn achievements_pending_count(&self, source: Source) -> Result<i64> {
-        sqlx::query_scalar(
-            "SELECT COUNT(*)
-             FROM games g JOIN library_entries e ON e.game_id = g.id
-             WHERE g.source = ? AND e.source_playtime_minutes IS NOT NULL
-               AND e.achievements_checked_at IS NULL",
-        )
-        .bind(source.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .db()
+    pub async fn achievements_pending_count(
+        &self,
+        source: Source,
+        account_id: Option<i64>,
+    ) -> Result<i64> {
+        match account_id {
+            Some(account_id) => sqlx::query_scalar(
+                "SELECT COUNT(*)
+                 FROM games g
+                 JOIN library_entries e ON e.game_id = g.id
+                 JOIN game_accounts ga ON ga.game_id = g.id AND ga.account_id = ?
+                      AND ga.source_playtime_minutes IS NOT NULL
+                 WHERE g.source = ? AND e.achievements_checked_at IS NULL",
+            )
+            .bind(account_id)
+            .bind(source.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .db(),
+            None => sqlx::query_scalar(
+                "SELECT COUNT(*)
+                 FROM games g JOIN library_entries e ON e.game_id = g.id
+                 WHERE g.source = ? AND e.source_playtime_minutes IS NOT NULL
+                   AND e.achievements_checked_at IS NULL",
+            )
+            .bind(source.as_str())
+            .fetch_one(&self.pool)
+            .await
+            .db(),
+        }
     }
 
     /// 写入一次成就检查的结果。

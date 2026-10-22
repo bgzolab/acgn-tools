@@ -20,7 +20,7 @@ pub async fn list_games(
     ValidQuery(query): ValidQuery<GameListQuery>,
 ) -> ApiResult<Json<Page<GameWithEntry>>> {
     let filters = GameFilters::from_query(&query);
-    let page = state
+    let mut page = state
         .db
         .list_games(
             &filters,
@@ -29,6 +29,7 @@ pub async fn list_games(
             query.per_page(),
         )
         .await?;
+    state.db.attach_accounts(&mut page.items).await?;
     Ok(Json(page))
 }
 
@@ -37,11 +38,15 @@ pub async fn get_game(
     State(state): State<AppState>,
     ValidPath(id): ValidPath<i64>,
 ) -> ApiResult<Json<GameWithEntry>> {
-    let item = state
+    let mut item = state
         .db
         .get_game(id)
         .await?
         .ok_or_else(|| ApiError(Error::not_found(format!("游戏 #{id}"))))?;
+    state
+        .db
+        .attach_accounts(std::slice::from_mut(&mut item))
+        .await?;
     Ok(Json(item))
 }
 
@@ -51,7 +56,12 @@ pub async fn patch_game(
     ValidPath(id): ValidPath<i64>,
     ValidJson(patch): ValidJson<EntryPatch>,
 ) -> ApiResult<Json<GameWithEntry>> {
-    let updated = state.db.update_entry(id, &patch).await?;
+    let mut updated = state.db.update_entry(id, &patch).await?;
+    // 账号徽标 / 区域价格随条目返回：PATCH 的响应会直接替换列表里的旧对象
+    state
+        .db
+        .attach_accounts(std::slice::from_mut(&mut updated))
+        .await?;
     Ok(Json(updated))
 }
 
@@ -116,10 +126,12 @@ pub async fn refresh_metadata(
         .get_game(id)
         .await?
         .ok_or_else(|| ApiError(Error::not_found(format!("游戏 #{id}"))))?;
+    let accounts = state.db.accounts_for_game(id).await?;
 
     Ok(Json(json!({
         "outcome": outcome.kind(),
         "game": refreshed.game,
         "entry": refreshed.entry,
+        "accounts": accounts,
     })))
 }

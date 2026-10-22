@@ -106,6 +106,8 @@ pub fn owned_game_to_source_item(game: &OwnedGame) -> SourceItem {
         poster_url: Some(poster_url(&appid)),
         status: Some(status),
         playtime_minutes: Some(playtime),
+        playtime_2weeks_minutes: game.playtime_2weeks,
+        last_played_at: crate::util::from_unix(game.rtime_last_played),
         metadata: serde_json::to_value(game).ok(),
         // 库存接口只有 appid / 名字 / 时长，属于「列表档」
         metadata_level: MetadataLevel::List,
@@ -147,6 +149,16 @@ mod tests {
         assert_eq!(item.title, "ELDEN RING");
         assert_eq!(item.status, Some(Status::Playing), "有游玩时长 = 在玩");
         assert_eq!(item.playtime_minutes, Some(4621));
+        assert_eq!(
+            item.playtime_2weeks_minutes,
+            Some(0),
+            "最近两周时长应随账号带出"
+        );
+        assert_eq!(
+            item.last_played_at.map(|at| at.timestamp()),
+            Some(1760000000),
+            "最后游玩时间应随账号带出"
+        );
         assert_eq!(item.metadata_level, MetadataLevel::List);
         assert!(item.cover_url.unwrap().ends_with("1245620/header.jpg"));
         assert!(item.metadata.is_some());

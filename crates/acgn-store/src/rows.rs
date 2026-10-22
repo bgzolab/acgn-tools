@@ -4,7 +4,8 @@
 //! 这样领域层不需要依赖 sqlx，解析失败也能给出可读错误。
 
 use acgn_core::{
-    Error, Game, GameWithEntry, ImportRun, LibraryEntry, MediaKind, Result, Source, Status,
+    Account, AccountSummary, Error, Game, GameAccount, GameWithEntry, ImportRun, LibraryEntry,
+    MediaKind, Result, Source, Status,
 };
 use chrono::{DateTime, Utc};
 
@@ -119,9 +120,194 @@ impl GameEntryRow {
             updated_at: self.e_updated_at,
         };
 
-        Ok(GameWithEntry { game, entry })
+        Ok(GameWithEntry::new(game, entry))
     }
 }
+
+/// accounts 行。
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct AccountRow {
+    pub id: i64,
+    pub source: String,
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub profile_url: Option<String>,
+    pub country_code: Option<String>,
+    pub country_override: Option<String>,
+    pub metadata_json: Option<String>,
+    pub metadata_updated_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl AccountRow {
+    pub fn into_domain(self) -> Result<Account> {
+        let source = Source::from_str_lossy(&self.source)
+            .ok_or_else(|| Error::storage(format!("非法 source: {}", self.source)))?;
+        let effective_country = self
+            .country_override
+            .clone()
+            .or_else(|| self.country_code.clone());
+        let metadata = self
+            .metadata_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok());
+
+        Ok(Account {
+            id: self.id,
+            source,
+            external_id: self.external_id,
+            display_name: self.display_name,
+            avatar_url: self.avatar_url,
+            profile_url: self.profile_url,
+            country_code: self.country_code,
+            country_override: self.country_override,
+            effective_country,
+            metadata,
+            metadata_updated_at: self.metadata_updated_at,
+            last_synced_at: self.last_synced_at,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        })
+    }
+}
+
+/// accounts + 关联计数（账号列表用）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AccountSummaryRow {
+    pub id: i64,
+    pub source: String,
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub profile_url: Option<String>,
+    pub country_code: Option<String>,
+    pub country_override: Option<String>,
+    pub metadata_json: Option<String>,
+    pub metadata_updated_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub owned_count: i64,
+    pub wishlist_count: i64,
+}
+
+impl AccountSummaryRow {
+    pub fn into_domain(self) -> Result<AccountSummary> {
+        let owned_count = self.owned_count;
+        let wishlist_count = self.wishlist_count;
+        let account = AccountRow {
+            id: self.id,
+            source: self.source,
+            external_id: self.external_id,
+            display_name: self.display_name,
+            avatar_url: self.avatar_url,
+            profile_url: self.profile_url,
+            country_code: self.country_code,
+            country_override: self.country_override,
+            metadata_json: self.metadata_json,
+            metadata_updated_at: self.metadata_updated_at,
+            last_synced_at: self.last_synced_at,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+        }
+        .into_domain()?;
+
+        Ok(AccountSummary {
+            account,
+            owned_count,
+            wishlist_count,
+        })
+    }
+}
+
+/// 游戏 ↔ 账号关联行（带账号展示字段，随条目返回）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct GameAccountRow {
+    pub game_id: i64,
+    pub account_id: i64,
+    pub source: String,
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub country: Option<String>,
+    pub in_wishlist: bool,
+    pub source_playtime_minutes: Option<i64>,
+    pub playtime_2weeks_minutes: Option<i64>,
+    pub last_played_at: Option<DateTime<Utc>>,
+    pub price_currency: Option<String>,
+    pub price_initial: Option<i64>,
+    pub price_final: Option<i64>,
+    pub discount_percent: Option<i64>,
+    pub is_free: Option<bool>,
+    pub price_updated_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+impl GameAccountRow {
+    pub fn into_domain(self) -> Result<GameAccount> {
+        let source = Source::from_str_lossy(&self.source)
+            .ok_or_else(|| Error::storage(format!("非法 source: {}", self.source)))?;
+        let owned = self.source_playtime_minutes.is_some();
+
+        Ok(GameAccount {
+            account_id: self.account_id,
+            source,
+            external_id: self.external_id,
+            display_name: self.display_name,
+            avatar_url: self.avatar_url,
+            country: self.country,
+            in_wishlist: self.in_wishlist,
+            owned,
+            source_playtime_minutes: self.source_playtime_minutes,
+            playtime_2weeks_minutes: self.playtime_2weeks_minutes,
+            last_played_at: self.last_played_at,
+            price_currency: self.price_currency,
+            price_initial: self.price_initial,
+            price_final: self.price_final,
+            discount_percent: self.discount_percent,
+            is_free: self.is_free,
+            price_updated_at: self.price_updated_at,
+            last_synced_at: self.last_synced_at,
+        })
+    }
+}
+
+/// `game_accounts` 的关联数据（导入合并时用，不含展示字段）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AccountLinkRow {
+    pub in_wishlist: bool,
+    pub source_playtime_minutes: Option<i64>,
+    pub playtime_2weeks_minutes: Option<i64>,
+    pub last_played_at: Option<DateTime<Utc>>,
+}
+
+/// `game_accounts ⋈ accounts` 的固定列清单（与 [`GameAccountRow`] 对齐）。
+pub(crate) const SELECT_GAME_ACCOUNT: &str = r#"
+SELECT
+    ga.game_id                AS game_id,
+    ga.account_id             AS account_id,
+    a.source                  AS source,
+    a.external_id             AS external_id,
+    a.display_name            AS display_name,
+    a.avatar_url              AS avatar_url,
+    LOWER(COALESCE(a.country_override, a.country_code)) AS country,
+    ga.in_wishlist            AS in_wishlist,
+    ga.source_playtime_minutes AS source_playtime_minutes,
+    ga.playtime_2weeks_minutes AS playtime_2weeks_minutes,
+    ga.last_played_at         AS last_played_at,
+    ga.price_currency         AS price_currency,
+    ga.price_initial          AS price_initial,
+    ga.price_final            AS price_final,
+    ga.discount_percent       AS discount_percent,
+    ga.is_free                AS is_free,
+    ga.price_updated_at       AS price_updated_at,
+    ga.last_synced_at         AS last_synced_at
+FROM game_accounts ga
+JOIN accounts a ON a.id = ga.account_id
+"#;
 
 /// import_runs 行。
 #[derive(Debug, Clone, sqlx::FromRow)]

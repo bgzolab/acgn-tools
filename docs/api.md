@@ -44,27 +44,103 @@ Metadata follows the source; personal state follows the local database — see
 | GET | `/api/health` | Liveness probe, version, uptime, data-source mode |
 | GET | `/api/config` | Frontend config: status list, Steam mode, country/language |
 | GET | `/api/stats` | Dashboard aggregates |
-| GET | `/api/games` | List games: `status` `source` `media_kind` `q` `sort` `favorite` `page` `per_page` |
-| GET | `/api/games/{id}` | One entry: `{ "game": …, "entry": … }` |
+| GET | `/api/accounts` | Source accounts with owned / wishlist counts |
+| POST | `/api/accounts/resolve` | Add an account: resolve steamID / vanity / profile link, fetch its profile (idempotent) |
+| PATCH | `/api/accounts/{id}` | Set or clear the account's regional price override |
+| DELETE | `/api/accounts/{id}` | Delete an account (associations cascade; games stay) |
+| GET | `/api/games` | List games: `status` `source` `media_kind` `account_id` `q` `sort` `favorite` `page` `per_page` |
+| GET | `/api/games/{id}` | One entry: `{ "game": …, "entry": …, "accounts": […] }` |
 | PATCH | `/api/games/{id}` | Update personal state (status, rating, progress, playtime, note, favorite, priority) |
 | DELETE | `/api/games/{id}` | Delete one entry (local-only; a re-import re-creates source items) |
 | POST | `/api/games/delete` | Batch delete `{"ids": […]}` → `{"deleted": n}` (multi-select cleanup) |
 | POST | `/api/games/{id}/refresh-metadata` | Re-fetch store details for a single entry |
-| POST | `/api/imports/steam/wishlist` | Import a Steam wishlist |
+| POST | `/api/imports/steam/wishlist` | Import a Steam wishlist for an account |
 | POST | `/api/imports/steam/library` | Import the Steam library (owned games + playtime; requires `STEAM_API_KEY`) |
 | POST | `/api/imports/steam/achievements` | Check achievement progress (all achievements → completed; per-game lookups) |
 | POST | `/api/imports` | Generic JSON import (flat `SourceItem`s, merge semantics) |
 | POST | `/api/imports/restore` | Restore a backup (the export document verbatim, file wins) |
 | GET | `/api/imports` | Run history (`?limit=`) |
 | GET | `/api/imports/{id}` | One run, with its warnings |
-| POST | `/api/enrich` | Enrich pending entries with store details |
+| POST | `/api/enrich` | Enrich pending entries with store details + account-region prices |
 | GET | `/api/export/json` | Full export (games + entries) |
+
+### Accounts
+
+Source accounts are **Steam identities**, not application logins. `POST /api/accounts/resolve`
+creates one row per `(source, external_id)` and refreshes the profile (best-effort):
+
+```json
+{ "source": "steam", "input": "76561197960287930" }
+```
+
+`input` accepts a 17-digit steamID64, a vanity name or a profile URL. The response carries the
+stored profile (persona name, avatar, profile URL, region, raw payload), `created`, `resolved_via`
+and any warnings:
+
+```json
+{
+  "account": {
+    "id": 1, "source": "steam", "external_id": "76561197960287930",
+    "display_name": "…", "avatar_url": "…", "profile_url": "…",
+    "country_code": "cn", "country_override": null, "effective_country": "cn",
+    "metadata": { "…": "raw GetPlayerSummaries player object" },
+    "metadata_updated_at": "…", "last_synced_at": "…", "created_at": "…", "updated_at": "…"
+  },
+  "created": true,
+  "resolved_via": "numeric",
+  "warnings": []
+}
+```
+
+`GET /api/accounts` returns every account plus `owned_count` / `wishlist_count`. `PATCH` only
+takes `country_code` (two letters, e.g. `us`; empty string clears the override and follows the
+profile); changing the effective region clears that account's cached prices. `DELETE` returns
+`204`, removes only `game_accounts` rows, and keeps the games / personal state.
+
+### Steam imports are per account
+
+Each Steam import either selects an existing account or supplies a raw ID (which creates the
+account automatically). Prefer `account_id`:
+
+```json
+{ "account_id": 1, "preview": true, "options": { "dry_run": false } }
+```
+
+`steam_id` remains supported for scripts and one-off syncs:
+
+```json
+{ "steam_id": "76561197960287930", "preview": true }
+```
+
+Either way the run args record `account_id` / `account`, and each imported item is linked to the
+account (`in_wishlist` for wishlist imports, per-account playtime for library imports). Omitting
+both → `400 invalid`.
 
 ### GET /api/games
 
 `sort` accepts: `added_desc` (default), `added_asc`, `updated_desc`, `title`, `review_desc`,
 `rating_desc`, `priority`, `price_desc`, `playtime_desc`. `per_page` is clamped to 1..200.
 The response is a page object: `{ items, total, page, per_page, total_pages }`.
+
+`account_id` restricts the list to games associated with that account (its wishlist **and** its
+library). Every item carries an optional `accounts` array (omitted when empty) with the linked
+accounts, per-account playtime / last played and the account-region price:
+
+```json
+{
+  "game": { "id": 12, "title": "…" },
+  "entry": { "playtime_minutes": 120 },
+  "accounts": [
+    {
+      "account_id": 1, "external_id": "7656119…", "display_name": "…", "avatar_url": "…",
+      "country": "cn", "owned": true, "in_wishlist": false,
+      "source_playtime_minutes": 120, "playtime_2weeks_minutes": 0, "last_played_at": "…",
+      "price_currency": null, "price_initial": null, "price_final": null,
+      "price_updated_at": null, "last_synced_at": "…"
+    }
+  ]
+}
+```
 
 `q` matches title, Chinese title, developers, publishers and tags. Wildcards in user input
 (`%`, `_`) are treated as literals.
@@ -96,23 +172,29 @@ actually happened — `{ "deleted": 2 }`. Empty `ids` or more than 1000 ids → 
 
 ```json
 {
-  "steam_id": "76561197960287930",
+  "account_id": 1,
   "preview": true,
   "options": { "include_dlc": true, "include_non_games": false, "dry_run": false }
 }
 ```
 
-- `steam_id` accepts a 17-digit steamID64, a vanity name, or a profile URL.
+- `account_id` selects a stored account (recommended). `steam_id` (17-digit steamID64, vanity
+  name or profile URL) is still accepted and creates the account automatically; the run args
+  record `account_id` / `account`.
 - No API key and no cookie are needed. The importer tries the public wishlist JSON first
   (richer data) and falls back to the official `IWishlistService` endpoint when Steam refuses
   anonymous access; `summary.source_mode` reports which path was used (`public_json`,
   `official_api` or `fixture`).
+- On the official path the response only carries appids, so the importer batch-fills localized
+  names, item types and vertical posters from `IStoreBrowseService/GetItems` (50 per request)
+  before saving. Only items the catalog cannot resolve (delisted / region-hidden) keep the
+  `Steam App <id>` placeholder; prices and descriptions still need "enrich".
 - `dry_run: true` reports what *would* happen (same numbers as a real run) without writing
   anything; the response then has `"run": null`.
 - `include_non_games` adds bundles / software / demos; those are skipped by default.
-- Response: `{ "summary": …, "run": …, "preview": [...] }`. `summary.warnings` explains
-  fallbacks (for example "fell back to the official API") and `summary.missing` counts entries
-  that are no longer in the wishlist — they are never deleted locally.
+- Every accepted item is linked to the account (`in_wishlist`); a library sync for the same
+  account clears that flag. `summary.missing` counts items that are gone from **this account's**
+  wishlist — other accounts and the local rows are untouched.
 
 ### POST /api/imports/steam/library
 
@@ -120,7 +202,7 @@ Imports the owned-games library, including cumulative playtime. Same request/res
 the wishlist import:
 
 ```json
-{ "steam_id": "76561197960287930", "preview": true, "options": { "dry_run": false } }
+{ "account_id": 1, "preview": true, "options": { "dry_run": false } }
 ```
 
 - **A Steam Web API key is required** (`STEAM_API_KEY`): the official `GetOwnedGames` endpoint
@@ -133,13 +215,14 @@ the wishlist import:
   confused with an empty library (which reports 0 items with a warning).
 - Owned games with playtime are imported as `playing`, never-played ones as `backlog`. A
   `wishlist` / `backlog` entry is upgraded through the normal status-adoption rule; a status
-  the user set (`playing` / `completed` / …) is never reverted. `summary.missing` counts items
-  that were seen in an earlier library sync but are gone now (refund / removed / lost family
-  sharing) — with the library wording, not the wishlist one.
-- **Playtime.** `SourceItem.playtime_minutes` is recorded in
-  `entry.source_playtime_minutes`, and `entry.playtime_minutes` follows it while the user has
-  not edited it by hand. A manual value wins on every later sync; `PATCH playtime_minutes: -1`
-  (or the "adopt Steam playtime" button) restores following.
+  the user set (`playing` / `completed` / …) is never reverted.
+- Each item is linked to the account with its own `source_playtime_minutes`,
+  `playtime_2weeks_minutes` and `last_played_at`. The entry-level tracked playtime is the
+  **maximum across accounts**, so a low-playtime alt cannot erase the main account's hours.
+  `summary.missing` is scoped to this account (refund / removed / lost family sharing).
+- **Playtime.** `entry.source_playtime_minutes` is the aggregate; `entry.playtime_minutes`
+  follows it while the user has not edited it by hand. A manual value wins on every later sync;
+  `PATCH playtime_minutes: -1` (or the "adopt Steam playtime" button) restores following.
 - If every imported game shows playtime `0`, the account has *"Always keep my total playtime
   private"* enabled (a checkbox under the Game-details privacy setting) — ownership is still
   imported. `playtime_2weeks` / `rtime_last_played` may also be absent unless the profile is
@@ -151,20 +234,25 @@ Checks achievement progress, one game per request, and marks games with **all ac
 as `completed`:
 
 ```json
-{ "steam_id": "bgzocn", "limit": 200 }
+{ "account_id": 1, "limit": 200 }
 ```
 
+- `account_id` selects the account (recommended); `steam_id` is accepted as a compatibility
+  entry and auto-creates the account. Omitting both → `400`.
 - Requires `STEAM_API_KEY` and a public "Game details" setting (same as the library import).
   `limit` defaults to 200 (max 500) — the response's `pending` tells you how many entries were
   never checked; call again to continue.
-- Only owned entries (`source_playtime_minutes` non-null) are checked. Poll order is
-  never-checked first, then the least-recently checked, so refreshes rotate.
+- Only entries owned by the selected account (`game_accounts.source_playtime_minutes`
+  non-null) are checked. Poll order is never-checked first, then the least-recently checked, so
+  refreshes rotate.
 - Status rules: `wishlist` / `backlog` / `playing` are promoted to `completed` (filling
   `finished_at` and 100% progress when empty); a user-set `completed` / `on_hold` / `dropped` /
   `ignored` is never reverted. Games without an achievement set stay untouched.
 - Per-entry progress is stored in `entry.achievements_achieved` / `achievements_total` and
   `achievements_checked_at`; entries whose achievements cannot be read (not owned / private)
-  keep their previous values and still advance the polling clock.
+  keep their previous values and still advance the polling clock. Progress is entry-level: when
+  several accounts own the same game, the displayed value is from the most recently checked
+  account, while any account's full completion promotes the entry.
 - Response:
 
 ```json
@@ -234,16 +322,31 @@ Re-running the same file is idempotent: the second run reports `unchanged` for e
 { "limit": 20 }
 ```
 
-Picks entries that never had store details fetched (`metadata_updated_at IS NULL`), wishlist
-first, and fetches them with concurrency 2 and a 400 ms gap. If Steam rate-limits (HTTP 429)
-the request fails with 422 and a "try again later" hint; already-fetched items stay committed.
-Successful runs are recorded in the run history as `metadata_enrich`.
+Two passes, both throttled by the same configuration (`STEAM_ENRICH_CONCURRENCY` /
+`STEAM_ENRICH_DELAY_MS`) and both stopping gracefully on HTTP 429:
+
+1. **Metadata** — entries that never had store details fetched (`metadata_updated_at IS NULL`),
+   wishlist first, fetched with the configured `STEAM_COUNTRY`.
+2. **Account-region prices** — `game_accounts` rows whose account region differs from
+   `STEAM_COUNTRY` and whose `price_updated_at IS NULL`. Requests are grouped by country and
+   appid (two accounts in one region share a fetch) and written to that account's link. Accounts
+   in the configured region (or without a known region) are not fetched separately; the UI falls
+   back to the global price for them.
+
+The response reports `account_prices` (association rows resolved, including "no listing in this
+region") next to the metadata counts. Batches that answer normally but lack an appid mark that
+association as checked so the pass converges; request-level failures stay pending for the next
+call. Run history counts both passes: `seen`/`updated`/`missing` include the region-price
+targets, so a run that only wrote prices no longer shows `updated: 0`. Successful runs are recorded in the run history as
+`metadata_enrich`. A rate limit during the metadata pass fails with 422 and leaves already-fetched
+items committed; a rate limit during the price pass only stops that pass and is reported in
+`warnings`.
 
 ### POST /api/games/{id}/refresh-metadata
 
-Returns `outcome` = `updated` / `unchanged` / `added` plus the refreshed `game` and `entry`.
-Unchanged results do not modify any timestamp. A rate limit is reported as 422, a missing store
-page as 502.
+Returns `outcome` = `updated` / `unchanged` / `added` plus the refreshed `game`, `entry` and
+`accounts`. Unchanged results do not modify any timestamp. A rate limit is reported as 422, a
+missing store page as 502.
 
 ### GET /api/export/json
 
@@ -255,3 +358,7 @@ Each element is `{ "game": …, "entry": … }`: full metadata plus personal sta
 meant to be posted back verbatim to [`POST /api/imports/restore`](#post-apiimportsrestore) for a
 backup round-trip (metadata + personal state; bookkeeping timestamps are refreshed). Flat
 `SourceItem` payloads for the merge import go to `POST /api/imports` instead.
+
+Accounts and their game associations are **not** part of the export: they are derived from the
+source and are rebuilt by the next account sync (avatars / names come back with the profile
+refresh).

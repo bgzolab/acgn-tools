@@ -223,6 +223,22 @@ impl MediaKind {
         }
     }
 
+    /// Steam `IStoreBrowseService/GetItems` 的整型 `type`：
+    /// `0` 游戏、`1/2` 包/捆绑、`4` DLC、`6` 软件，音乐/硬件/视频/系列归到 `Other`。
+    ///
+    /// 未知值返回 `None`：调用方应保留原判断，而不是把一个正常游戏误判成 `Other`
+    /// 后被 `include_non_games` 过滤掉。
+    pub fn from_store_browse_type(value: i64) -> Option<Self> {
+        match value {
+            0 => Some(MediaKind::Game),
+            1 | 2 => Some(MediaKind::Bundle),
+            3 | 5 | 7 | 8 => Some(MediaKind::Other),
+            4 => Some(MediaKind::Dlc),
+            6 => Some(MediaKind::Software),
+            _ => None,
+        }
+    }
+
     pub fn from_str_lossy(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "game" => Some(MediaKind::Game),
@@ -333,6 +349,131 @@ pub struct LibraryEntry {
 pub struct GameWithEntry {
     pub game: Game,
     pub entry: LibraryEntry,
+    /// 关联的数据源账号（库存 / 愿望单）。没有账号关联（手动条目、旧数据）时为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<GameAccount>,
+}
+
+impl GameWithEntry {
+    /// 不带账号关联的构造（账号信息由存储层按需回填）。
+    pub fn new(game: Game, entry: LibraryEntry) -> Self {
+        Self {
+            game,
+            entry,
+            accounts: Vec::new(),
+        }
+    }
+}
+
+/// 数据源账号（Steam / Bangumi / 小黑盒……的登录身份）。
+///
+/// 注意：这是**数据源侧的身份**，不是本项目的多用户账号体系。
+/// `(source, external_id)` 唯一；`external_id` 对 Steam 是 17 位 steamID64。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Account {
+    pub id: i64,
+    pub source: Source,
+    pub external_id: String,
+    /// 来源侧的展示名（Steam 的 `personaname`）
+    pub display_name: Option<String>,
+    /// 头像 URL（Steam 的 `avatarfull`）
+    pub avatar_url: Option<String>,
+    pub profile_url: Option<String>,
+    /// 资料里的区域代码（Steam 的 `loccountrycode`，小写）
+    pub country_code: Option<String>,
+    /// 手动覆盖的价格区域；为空时跟随资料
+    pub country_override: Option<String>,
+    /// 实际取价区域：`country_override` 优先，其次 `country_code`
+    pub effective_country: Option<String>,
+    /// 来源侧原始资料载荷（有多少存多少，方便以后补字段）
+    pub metadata: Option<serde_json::Value>,
+    pub metadata_updated_at: Option<DateTime<Utc>>,
+    /// 最近一次同步（库存 / 愿望单 / 成就）的时间
+    pub last_synced_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Account {
+    /// 实际取价区域（`country_override` 优先）。
+    pub fn country(&self) -> Option<&str> {
+        self.country_override
+            .as_deref()
+            .or(self.country_code.as_deref())
+    }
+
+    /// 展示名兜底：没有昵称时用「Steam 765…」。
+    pub fn display_label(&self) -> String {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{} {}", self.source.label(), self.external_id))
+    }
+}
+
+/// 适配器抓到的一份账号资料（存储层负责合并与落库）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountProfile {
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub profile_url: Option<String>,
+    /// 资料里的区域代码（Steam `loccountrycode`）
+    pub country_code: Option<String>,
+    /// 来源原始载荷
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// 账号列表项：账号 + 关联统计。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AccountSummary {
+    #[serde(flatten)]
+    pub account: Account,
+    /// 该账号库存里的条目数（含 0 分钟）
+    pub owned_count: i64,
+    /// 该账号愿望单里的条目数
+    pub wishlist_count: i64,
+}
+
+/// 游戏 ↔ 账号的关联（随 `GameWithEntry` 返回）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameAccount {
+    pub account_id: i64,
+    pub source: Source,
+    /// 账号的 steamID64 / 来源侧 ID
+    pub external_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+    /// 该账号的实际取价区域（override ?? 资料区域）
+    pub country: Option<String>,
+    /// 是否仍在最近一次该账号的愿望单里
+    pub in_wishlist: bool,
+    /// 是否在该账号的库存里（`source_playtime_minutes` 非空即拥有，0 也算）
+    pub owned: bool,
+    /// 该账号的累计游玩时长（分钟）
+    pub source_playtime_minutes: Option<i64>,
+    /// 最近两周游玩时长（分钟）
+    pub playtime_2weeks_minutes: Option<i64>,
+    /// 最后一次游玩的时刻
+    pub last_played_at: Option<DateTime<Utc>>,
+    /// 按该账号区域抓到的价格（分）
+    pub price_currency: Option<String>,
+    pub price_initial: Option<i64>,
+    pub price_final: Option<i64>,
+    pub discount_percent: Option<i64>,
+    pub is_free: Option<bool>,
+    /// 非空表示「该账号区域已经问过 Steam」：此时没有价格 = 该区域确实没有售价，
+    /// 而不是「还没抓过」。
+    pub price_updated_at: Option<DateTime<Utc>>,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+impl GameAccount {
+    /// 该账号区域的价格（分）。折扣价优先。
+    pub fn effective_price(&self) -> Option<i64> {
+        self.price_final.or(self.price_initial)
+    }
 }
 
 /// 一次导入 / 同步的运行记录。

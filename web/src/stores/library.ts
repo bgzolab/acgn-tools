@@ -11,6 +11,8 @@ export interface LibraryFilters {
   q: string;
   sort: string;
   favorite: boolean;
+  /** 只看某个数据源账号关联的条目（null = 全部） */
+  account_id: number | null;
   page: number;
   per_page: number;
 }
@@ -40,6 +42,7 @@ export const useLibraryStore = defineStore("library", () => {
     q: "",
     sort: "added_desc",
     favorite: false,
+    account_id: null,
     page: 1,
     per_page: 48,
   });
@@ -53,6 +56,7 @@ export const useLibraryStore = defineStore("library", () => {
         q: filters.q.trim() || undefined,
         sort: filters.sort,
         favorite: filters.favorite || undefined,
+        account_id: filters.account_id ?? undefined,
         page: filters.page,
         per_page: filters.per_page,
       });
@@ -95,6 +99,12 @@ export const useLibraryStore = defineStore("library", () => {
     refresh();
   }
 
+  function setAccount(accountId: number | null) {
+    filters.account_id = accountId;
+    filters.page = 1;
+    refresh();
+  }
+
   function goPage(page: number) {
     filters.page = Math.min(Math.max(1, page), Math.max(1, totalPages.value));
     refresh();
@@ -133,6 +143,7 @@ export const useLibraryStore = defineStore("library", () => {
     setQuery,
     setSort,
     toggleFavoriteOnly,
+    setAccount,
     goPage,
     updateEntry,
     replaceItem,

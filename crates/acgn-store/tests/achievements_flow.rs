@@ -41,6 +41,7 @@ async fn import_library(db: &Db, items: &[SourceItem]) {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Library,
+        account_id: None,
     })
     .await
     .expect("库存导入不应失败");
@@ -258,6 +259,7 @@ async fn pending_achievements_cover_library_items_and_rotate() {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Wishlist,
+        account_id: None,
     })
     .await
     .unwrap();
@@ -271,7 +273,10 @@ async fn pending_achievements_cover_library_items_and_rotate() {
     )
     .await;
 
-    let pending = db.pending_achievements(Source::Steam, 10).await.unwrap();
+    let pending = db
+        .pending_achievements(Source::Steam, None, 10)
+        .await
+        .unwrap();
     assert_eq!(
         pending
             .iter()
@@ -281,13 +286,18 @@ async fn pending_achievements_cover_library_items_and_rotate() {
         "只挑库存条目，且没查过的在前面"
     );
     assert_eq!(
-        db.achievements_pending_count(Source::Steam).await.unwrap(),
+        db.achievements_pending_count(Source::Steam, None)
+            .await
+            .unwrap(),
         2
     );
 
     // 查掉一个：它应排到没查过的后面；数量减少
     mark_checked(&db, "3301", 1, 2).await;
-    let pending = db.pending_achievements(Source::Steam, 10).await.unwrap();
+    let pending = db
+        .pending_achievements(Source::Steam, None, 10)
+        .await
+        .unwrap();
     assert_eq!(
         pending
             .iter()
@@ -297,13 +307,15 @@ async fn pending_achievements_cover_library_items_and_rotate() {
         "没查过的优先，其次最久没查的"
     );
     assert_eq!(
-        db.achievements_pending_count(Source::Steam).await.unwrap(),
+        db.achievements_pending_count(Source::Steam, None)
+            .await
+            .unwrap(),
         1
     );
 
     // limit 生效
     assert_eq!(
-        db.pending_achievements(Source::Steam, 1)
+        db.pending_achievements(Source::Steam, None, 1)
             .await
             .unwrap()
             .len(),
@@ -313,7 +325,9 @@ async fn pending_achievements_cover_library_items_and_rotate() {
     // 全部查过：pending_count 归零（列表仍会按轮询返回，用于刷新）
     mark_checked(&db, "3302", 0, 0).await;
     assert_eq!(
-        db.achievements_pending_count(Source::Steam).await.unwrap(),
+        db.achievements_pending_count(Source::Steam, None)
+            .await
+            .unwrap(),
         0
     );
 }

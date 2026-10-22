@@ -51,6 +51,7 @@ async fn import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Wishlist,
+        account_id: None,
     })
     .await
     .expect("导入不应失败")
@@ -70,6 +71,7 @@ async fn dry_import(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSummary {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Wishlist,
+        account_id: None,
     })
     .await
     .expect("预览不应失败")
@@ -104,6 +106,7 @@ async fn import_library(db: &Db, items: &[SourceItem]) -> acgn_core::ImportSumma
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Library,
+        account_id: None,
     })
     .await
     .expect("库存导入不应失败")
@@ -123,6 +126,7 @@ async fn dry_import_library(db: &Db, items: &[SourceItem]) -> acgn_core::ImportS
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Library,
+        account_id: None,
     })
     .await
     .expect("库存预览不应失败")
@@ -301,6 +305,43 @@ async fn metadata_enrichment_marks_and_clears_pending() {
     assert!(pending.is_empty());
 }
 
+/// 病态库（game 在、library_entries 行被手动删掉）的修复分支也要走差异判定：
+/// 元数据本来就一致时只补关系行，不刷新 `metadata_updated_at` / 误报 updated。
+#[tokio::test]
+async fn repairing_a_missing_entry_does_not_report_a_false_update() {
+    let db = setup().await;
+    import(&db, &[item("820", "Omega")]).await;
+
+    let mut detailed = item("820", "Omega");
+    detailed.metadata_level = MetadataLevel::Full;
+    detailed.metadata = Some(serde_json::json!({ "kind": "appdetails" }));
+    detailed.short_description = Some("一段简介".to_string());
+    assert!(matches!(
+        db.update_metadata(&detailed).await.unwrap(),
+        MetadataOutcome::Updated(_)
+    ));
+
+    let game = get(&db, "820").await;
+    let game_id = game.game.id;
+    let before = game.game.metadata_updated_at;
+    sqlx::query("DELETE FROM library_entries WHERE game_id = ?")
+        .bind(game_id)
+        .execute(&db.pool)
+        .await
+        .expect("删除关系行");
+
+    // game 行还在、关系行缺失：update_metadata 会补关系行并合并元数据
+    assert!(matches!(
+        db.update_metadata(&detailed).await.unwrap(),
+        MetadataOutcome::Unchanged(_)
+    ));
+    let after = get(&db, "820").await;
+    assert_eq!(
+        after.game.metadata_updated_at, before,
+        "修复关系行不应刷新元数据时间戳"
+    );
+}
+
 #[tokio::test]
 async fn list_level_metadata_never_clobbers_full_metadata() {
     let db = setup().await;
@@ -371,6 +412,7 @@ async fn dry_run_reports_without_writing() {
             source_mode: "test",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            account_id: None,
         })
         .await
         .unwrap();
@@ -531,6 +573,7 @@ async fn filtered_out_items_are_not_reported_as_missing() {
             source_mode: "test",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            account_id: None,
         })
         .await
         .unwrap();
@@ -556,6 +599,7 @@ async fn filtered_out_items_are_not_reported_as_missing() {
             source_mode: "test",
             extra_warnings: Vec::new(),
             missing_scope: MissingScope::Wishlist,
+            account_id: None,
         })
         .await
         .unwrap();

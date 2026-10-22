@@ -17,6 +17,7 @@ pub mod client;
 pub mod config;
 pub mod fixture;
 pub mod library;
+pub mod profile;
 pub mod util;
 pub mod wishlist;
 
@@ -26,6 +27,7 @@ pub use client::{AppDetailsBatch, ImportFetch, SteamClient};
 pub use config::SteamConfig;
 pub use fixture::FixtureData;
 pub use library::{OwnedGame, OwnedGamesPayload};
+pub use profile::{parse_player_summaries, parse_profile_xml};
 pub use wishlist::{WishlistItem, WishlistPayload};
 
 /// Steam 商店 CDN（header / 竖版封面都能直接拼出来，不依赖 hash）。

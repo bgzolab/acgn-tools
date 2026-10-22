@@ -1,7 +1,9 @@
-//! 商店资产（`IStoreBrowseService`）：竖版海报等。
+//! 商店目录 / 资产（`IStoreBrowseService`）：名称、类型与竖版海报。
 //!
 //! `appdetails` 只给横版 `header.jpg`；竖版 `library_capsule`（600x900）要从
 //! `api.steampowered.com/IStoreBrowseService/GetItems/v1` 取（匿名可用、支持批量）。
+//! 同一个接口还带**本地化名称与类型**，所以官方愿望单（只返回 appid）可以用它批量
+//! 补全标题，避免出现大量 `Steam App XXX` 占位符。
 //!
 //! 为什么不用旧式路径 `cdn.cloudflare.steamstatic.com/steam/apps/{id}/library_600x900.jpg`：
 //! 实测它对一部分游戏直接 404（成人 / 区域受限内容为主），卡片会退化成文字占位。
@@ -11,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use acgn_core::{MediaKind, SourceItem};
 use reqwest::Url;
 use serde::Deserialize;
 
@@ -62,6 +65,10 @@ struct GetItemsEnvelope {
 struct StoreItem {
     appid: Option<u64>,
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "type")]
+    store_type: Option<i64>,
+    #[serde(default)]
     assets: ItemAssets,
 }
 
@@ -83,10 +90,30 @@ impl ItemAssets {
             .or(self.library_capsule.as_deref())
             .filter(|name| !name.is_empty())
     }
+
+    fn poster_url(&self) -> Option<String> {
+        let format = self
+            .asset_url_format
+            .as_deref()
+            .filter(|format| !format.is_empty())?;
+        let filename = self.capsule_filename()?;
+        Some(asset_url(format, filename))
+    }
 }
 
-/// 从响应里解析 `appid → 竖版海报 URL`；缺 assets / 缺文件名的条目静默跳过。
-pub fn parse_library_capsules(raw: &serde_json::Value) -> HashMap<String, String> {
+/// 商店目录里的单条信息（官方愿望单批量补全用）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoreCatalogEntry {
+    pub name: Option<String>,
+    /// 未知类型为 `None`（调用方保留原判断）
+    pub media_kind: Option<MediaKind>,
+    pub poster_url: Option<String>,
+}
+
+/// 从响应里解析 `appid → 目录信息`。
+///
+/// Steam 对已下架 / 不可见条目会返回 `appid: 0` 的占位对象，直接跳过。
+pub fn parse_store_catalog(raw: &serde_json::Value) -> HashMap<String, StoreCatalogEntry> {
     let Ok(response) = serde_json::from_value::<GetItemsResponse>(raw.clone()) else {
         return HashMap::new();
     };
@@ -96,16 +123,59 @@ pub fn parse_library_capsules(raw: &serde_json::Value) -> HashMap<String, String
         .store_items
         .into_iter()
         .filter_map(|item| {
-            let appid = item.appid?;
-            let format = item
-                .assets
-                .asset_url_format
+            let appid = item.appid.filter(|appid| *appid > 0)?;
+            let name = item
+                .name
                 .as_deref()
-                .filter(|format| !format.is_empty())?;
-            let filename = item.assets.capsule_filename()?;
-            Some((appid.to_string(), asset_url(format, filename)))
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string);
+            Some((
+                appid.to_string(),
+                StoreCatalogEntry {
+                    name,
+                    media_kind: item.store_type.and_then(MediaKind::from_store_browse_type),
+                    poster_url: item.assets.poster_url(),
+                },
+            ))
         })
         .collect()
+}
+
+/// 从响应里解析 `appid → 竖版海报 URL`；缺 assets / 缺文件名的条目静默跳过。
+pub fn parse_library_capsules(raw: &serde_json::Value) -> HashMap<String, String> {
+    parse_store_catalog(raw)
+        .into_iter()
+        .filter_map(|(appid, entry)| entry.poster_url.map(|url| (appid, url)))
+        .collect()
+}
+
+/// 把批量目录信息合并到条目上（只覆盖来源确实给了的字段）。
+///
+/// 返回仍未取到名称的条目数：官方愿望单接口只给 appid，目录失败时这些条目会停留在
+/// `Steam App XXX` 占位符。
+pub fn apply_store_catalog(
+    items: &mut [SourceItem],
+    catalog: &HashMap<String, StoreCatalogEntry>,
+) -> usize {
+    let mut missing = 0usize;
+    for item in items {
+        if let Some(entry) = catalog.get(&item.external_id) {
+            if let Some(name) = &entry.name {
+                item.title = name.clone();
+            }
+            if let Some(kind) = entry.media_kind {
+                item.media_kind = kind;
+            }
+            if let Some(poster) = &entry.poster_url {
+                item.poster_url = Some(poster.clone());
+            }
+        }
+        if item.title.trim().is_empty() || item.title.starts_with("Steam App ") {
+            missing += 1;
+        }
+    }
+    missing
 }
 
 /// `asset_url_format` 里的 `${FILENAME}` 换成具体文件，拼上资产 CDN。
@@ -125,14 +195,19 @@ mod tests {
             "store_items": [
                 {
                     "appid": 4264260,
+                    "name": "示例游戏",
+                    "type": 0,
                     "assets": {
                         "asset_url_format": "steam/apps/4264260/${FILENAME}?t=1779968151",
                         "library_capsule": "aaa/library_capsule_schinese.jpg",
                         "library_capsule_2x": "bbb/library_capsule_schinese_2x.jpg"
                     }
                 },
-                { "appid": 999, "assets": { "asset_url_format": "steam/apps/999/${FILENAME}" } },
-                { "appid": 1000 }
+                { "appid": 999, "name": "无海报", "type": 4,
+                  "assets": { "asset_url_format": "steam/apps/999/${FILENAME}" } },
+                { "appid": 1000 },
+                { "appid": 2000, "name": "工具", "type": 6 },
+                { "appid": 0, "name": "", "type": null }
             ]
         }
     }"#;
@@ -151,6 +226,64 @@ mod tests {
                 "steam/apps/4264260/bbb/library_capsule_schinese_2x.jpg?t=1779968151"
             )),
         );
+    }
+
+    /// 目录解析：本地化名称、整数类型映射，`appid: 0` 的占位对象跳过。
+    #[test]
+    fn parses_store_catalog_names_and_types() {
+        let value: serde_json::Value = serde_json::from_str(SAMPLE).unwrap();
+        let catalog = parse_store_catalog(&value);
+
+        let game = catalog.get("4264260").expect("应解析出游戏");
+        assert_eq!(game.name.as_deref(), Some("示例游戏"));
+        assert_eq!(game.media_kind, Some(MediaKind::Game));
+        assert!(game.poster_url.is_some());
+
+        let dlc = catalog.get("999").expect("应解析出 DLC");
+        assert_eq!(dlc.media_kind, Some(MediaKind::Dlc));
+        assert!(dlc.poster_url.is_none(), "没有 asset 文件名时不造海报 URL");
+
+        let software = catalog.get("2000").expect("应解析出软件");
+        assert_eq!(software.media_kind, Some(MediaKind::Software));
+
+        assert!(
+            !catalog.contains_key("0"),
+            "Steam 对不可见条目返回 appid 0，必须跳过"
+        );
+    }
+
+    /// 补全：占位标题换成真实名称、DLC 类型生效、海报生效；缺名称的条目被计数。
+    #[test]
+    fn applies_store_catalog_to_items() {
+        let mut items = vec![
+            SourceItem {
+                external_id: "4264260".to_string(),
+                title: "Steam App 4264260".to_string(),
+                ..Default::default()
+            },
+            SourceItem {
+                external_id: "999".to_string(),
+                title: "Steam App 999".to_string(),
+                ..Default::default()
+            },
+        ];
+        let catalog = HashMap::from([(
+            "4264260".to_string(),
+            StoreCatalogEntry {
+                name: Some("示例游戏".to_string()),
+                media_kind: Some(MediaKind::Game),
+                poster_url: Some("https://example.com/p.jpg".to_string()),
+            },
+        )]);
+
+        let missing = apply_store_catalog(&mut items, &catalog);
+        assert_eq!(missing, 1, "999 没有目录信息，仍是占位符");
+        assert_eq!(items[0].title, "示例游戏");
+        assert_eq!(
+            items[0].poster_url.as_deref(),
+            Some("https://example.com/p.jpg")
+        );
+        assert_eq!(items[1].title, "Steam App 999");
     }
 
     /// 只有 1x 时退回 1x（部分游戏的文件名不是 library_capsule*，原样使用）。

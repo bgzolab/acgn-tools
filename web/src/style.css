@@ -238,6 +238,22 @@ p {
   margin-top: 16px;
 }
 
+/*
+ * 网格与面板之间也要保持 16px 的纵向节奏：
+ * 之前只有 .panel + .panel，首页的「统计卡片 → 面板 → 面板 → 两列网格」
+ * 会在 grid 与 panel 交界处贴在一起。
+ */
+.grid + .panel,
+.panel + .grid,
+.grid + .grid {
+  margin-top: 16px;
+}
+
+/* 网格内部的面板由 gap 负责间距，不要再叠加相邻兄弟的 margin */
+.grid > .panel + .panel {
+  margin-top: 0;
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -622,6 +638,8 @@ p {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+  flex-wrap: wrap;
+  row-gap: 4px;
   font-size: 11px;
   color: var(--muted);
 }
@@ -756,6 +774,10 @@ p {
   font-size: 12.5px;
 }
 
+.table-scroll {
+  overflow-x: auto;
+}
+
 .table th,
 .table td {
   text-align: left;
@@ -884,6 +906,258 @@ p {
 .toast.warn { border-color: rgba(210, 153, 34, 0.5); }
 .toast .msg { color: var(--text-dim); }
 .toast .msg strong { color: var(--text); display: block; margin-bottom: 2px; font-weight: 600; }
+
+/* ------------------------------------------------------------------ 账号 */
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.account-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.account-card:hover {
+  border-color: #303a48;
+}
+
+.account-card.active {
+  border-color: rgba(124, 140, 255, 0.55);
+  background: var(--accent-soft);
+}
+
+.account-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-weight: 600;
+}
+
+.avatar {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.avatar-fallback {
+  line-height: 1;
+}
+
+.chip-account {
+  gap: 6px;
+}
+
+.card-accounts {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.card-accounts .avatar {
+  border-color: transparent;
+}
+
+.account-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.account-link-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.account-link .price {
+  white-space: nowrap;
+}
+
+.danger-text {
+  color: var(--danger);
+}
+
+/* ------------------------------------------------------------------ 同步进度 */
+
+.progress-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  overflow: hidden;
+  margin: 10px 0 12px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #39c5cf);
+  transition: width 0.3s ease;
+}
+
+.sync-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sync-step {
+  display: flex;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+
+.sync-step.running {
+  border-color: rgba(124, 140, 255, 0.45);
+}
+
+.sync-step.failed {
+  border-color: rgba(248, 81, 73, 0.4);
+}
+
+.sync-step.skipped {
+  opacity: 0.72;
+}
+
+.sync-step-icon {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.sync-step.ok .sync-step-icon {
+  color: var(--ok);
+}
+
+.sync-step.running .sync-step-icon {
+  color: var(--accent);
+  display: inline-block;
+  animation: spin 1.2s linear infinite;
+}
+
+.sync-step.failed .sync-step-icon {
+  color: var(--danger);
+}
+
+.sync-step-main {
+  flex: 1;
+  min-width: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------------------------------------------------ 弹窗（同步语义说明） */
+
+.help-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-left: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel-3);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: pointer;
+}
+
+.help-btn:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.62);
+  backdrop-filter: blur(2px);
+  z-index: 50;
+}
+
+.modal {
+  position: fixed;
+  z-index: 51;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(80vh, 720px);
+  overflow: auto;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal .warn-list {
+  margin: 0;
+}
 
 /* ------------------------------------------------------------------ 响应式 */
 

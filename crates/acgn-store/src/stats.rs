@@ -103,12 +103,12 @@ impl Db {
 
         let recent_imports = self.list_import_runs(6).await?;
 
-        let recently_added = self
+        let mut recently_added = self
             .list_games(&GameFilters::default(), Some("added_desc"), 1, 8)
             .await?
             .items;
 
-        let playing = self
+        let mut playing = self
             .list_games(
                 &GameFilters {
                     status: Some(Status::Playing),
@@ -120,6 +120,10 @@ impl Db {
             )
             .await?
             .items;
+
+        // 看板卡片与库列表一样展示账号徽标 / 区域价格
+        self.attach_accounts(&mut recently_added).await?;
+        self.attach_accounts(&mut playing).await?;
 
         Ok(Stats {
             total_games,

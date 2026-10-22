@@ -83,7 +83,8 @@ node scripts/gen-steam-fixture.mjs
 | Metadata (title, cover, price, review, description, …) | **Source** — overwrite when the source provides a value |
 | Personal state (status, rating, note, progress, favorite) | **Local** — an import must never overwrite it |
 | Playtime | **Source-tracked, locally overridable** — imports record `source_playtime_minutes` and `playtime_minutes` follows it until the user edits it (design.md §4.5) |
-| Items that disappeared from the source | **Reported only** (`missing`), never deleted |
+| Account association (`game_accounts`: owned / wishlist, per-account playtime) | **Source** — an item belongs to the account the sync ran for |
+| Items that disappeared from the source | **Reported only** (`missing`), never deleted; scoped per account and repeated while it stays gone |
 | Re-importing identical data | Must be a no-op (`unchanged`), imports are idempotent |
 
 `SourceItem.status` is adopted while the local entry is still `wishlist` or `backlog` (the
@@ -92,10 +93,14 @@ node scripts/gen-steam-fixture.mjs
 library uses this to promote games with playtime to `playing` and leaves never-played ones at
 `backlog`; the achievement check (see `docs/design.md` §5.2) promotes
 `wishlist` / `backlog` / `playing` to `completed` for games with all achievements. `missing`
-candidates are scoped per import kind (`MissingScope::Wishlist` vs `MissingScope::Library`).
+candidates are scoped per import kind (`MissingScope::Wishlist` vs `MissingScope::Library`) and,
+when `ImportRequest.account_id` is set, per account (`game_accounts.in_wishlist` /
+`game_accounts.source_playtime_minutes`). The entry-level tracked playtime is the `MAX` across
+the game's accounts; dry-run and real imports must use the same aggregate (design.md §4.6).
 
-Any change to this table requires updating `crates/acgn-store/tests/import_flow.rs` **and** the
-"Sync semantics" section of `README.md`. Those tests are the specification.
+Any change to this table requires updating `crates/acgn-store/tests/import_flow.rs` /
+`crates/acgn-store/tests/accounts_flow.rs` **and** the "Sync semantics" section of `README.md`.
+Those tests are the specification.
 
 Backups are a **separate write path** (`POST /api/imports/restore` → `Db::restore_items`): the
 file is authoritative for metadata *and* personal state. Never route a restore through the merge
@@ -134,6 +139,13 @@ call `Db::import_items`. Do not add source-specific branches to the merge logic 
 - Enum-ish columns (`status`, `source`, `media_kind`) are plain `TEXT`; conversion happens in
   `crates/acgn-store/src/rows.rs`, so parsing failures surface as readable errors.
 - Array-ish columns (`developers`, `publishers`, …) are JSON strings.
+- Accounts: `accounts` (source identity, unique per `(source, external_id)`) and
+  `game_accounts` (many-to-many game ↔ account with wishlist / per-account playtime / regional
+  price). Account profiles are refreshed best-effort; a profile failure is a warning, never a
+  sync failure. Changing `country_override` clears that account's cached prices.
+  `games` and personal state survive `DELETE /api/accounts/{id}`; only associations cascade.
+  Backups (`/api/export/json`) deliberately exclude accounts and associations — they are rebuilt
+  by the next account sync.
 
 ### 4.7 API rules
 
@@ -146,6 +158,11 @@ call `Db::import_items`. Do not add source-specific branches to the merge logic 
   `POST /api/games/delete` (batch, `{"ids": […]}` → `{"deleted": n}`). It never writes
   `import_runs`, and the next import re-creates items that are still in the source.
 - Status keys are exactly: `wishlist`, `backlog`, `playing`, `completed`, `on_hold`, `dropped`, `ignored`.
+- Steam imports take `account_id` (preferred) or `steam_id` (auto-creates the account); omitting
+  both is `400`. `GET /api/games?account_id=N` filters by account and items carry an optional
+  `accounts` array. `POST /api/accounts/resolve` is idempotent per `(source, external_id)`;
+  `PATCH /api/accounts/{id}` only changes `country_code` (empty = follow the profile);
+  `DELETE /api/accounts/{id}` cascades associations but never deletes games.
 - The server binds to `127.0.0.1` by default and only allows the origins listed in
   `ACGN_CORS_ORIGINS`. Do not loosen either one without an explicit security rationale.
 

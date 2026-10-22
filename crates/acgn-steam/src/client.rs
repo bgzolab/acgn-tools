@@ -9,17 +9,22 @@
 use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
-use acgn_core::{AchievementProgress, Error, Result, SourceItem};
+use acgn_core::{AccountProfile, AchievementProgress, Error, Result, SourceItem};
 use futures::future::join_all;
 use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE};
 use tracing::{debug, warn};
 
 use crate::achievements::parse_player_achievements;
 use crate::appdetails::parse_app_details;
-use crate::assets::{STORE_ITEMS_CHUNK, parse_library_capsules, store_items_url};
+use crate::assets::{
+    STORE_ITEMS_CHUNK, StoreCatalogEntry, apply_store_catalog, parse_store_catalog, store_items_url,
+};
 use crate::config::SteamConfig;
 use crate::fixture::FixtureData;
 use crate::library::{OwnedGamesPayload, owned_game_to_source_item};
+use crate::profile::{
+    parse_player_summaries, parse_profile_xml, player_summaries_url, profile_xml_url,
+};
 use crate::util::extract_xml_tag;
 use crate::wishlist::{WishlistPayload, wishlist_to_source_item};
 use crate::{
@@ -33,6 +38,10 @@ const MAX_WISHLIST_PAGES: u32 = 60;
 /// 官方接口最多翻多少页（分页语义若变化，靠告警暴露而不是静默截断）。
 const MAX_OFFICIAL_PAGES: u32 = 60;
 
+/// 愿望单分页之间的最小间隔：一次同步可能翻几十页，给 Steam 留一点喘息，
+/// 配合「一键同步」的串行执行，避免匿名接口被短时间打满。
+const WISHLIST_PAGE_DELAY_MS: u64 = 250;
+
 /// 商店详情接口的兜底国家：国区不售的条目只有换区才能拿到数据。
 const FALLBACK_COUNTRY: &str = "us";
 
@@ -41,31 +50,48 @@ const FALLBACK_COUNTRY: &str = "us";
 /// **必须脱敏**：reqwest 的 `Display` 会带上完整请求 URL（含 query），而官方愿望单接口的
 /// API Key 就在 query 里（`?key=...`）。一旦原样透传，密钥会经 warnings → `import_runs`、
 /// `ApiError` → HTTP 响应、tracing → 日志三处泄漏，且永久留在数据库的同步历史里。
-/// `without_url()` 只去掉 URL 字段，`is_timeout()` / `is_decode()` 等分类信息都保留。
+/// 这里去掉 query（保留 host/path 方便定位是哪个接口），`is_timeout()` / `is_decode()`
+/// 等分类信息都保留。
+fn map_net_error(err: reqwest::Error) -> Error {
+    // query 里可能有 API Key / cursor：只保留协议 + 域名 + 路径
+    let endpoint = err.url().map(|url| {
+        let mut clean = url.clone();
+        clean.set_query(None);
+        clean.set_fragment(None);
+        clean.to_string()
+    });
+    let timeout = err.is_timeout();
+    let decode = err.is_decode();
+    let err = err.without_url();
+    let message = match endpoint {
+        Some(endpoint) => format!("{err}（{endpoint}）"),
+        None => err.to_string(),
+    };
+
+    if timeout {
+        Error::network(format!("请求超时: {message}"))
+    } else if decode {
+        Error::upstream(format!("响应解析失败: {message}"))
+    } else {
+        Error::network(message)
+    }
+}
+
 pub(crate) trait ReqwestExt<T> {
     fn net(self) -> Result<T>;
 }
 
 impl<T> ReqwestExt<T> for std::result::Result<T, reqwest::Error> {
     fn net(self) -> Result<T> {
-        self.map_err(|err| {
-            let err = err.without_url();
-            if err.is_timeout() {
-                Error::network(format!("请求超时: {err}"))
-            } else if err.is_decode() {
-                Error::upstream(format!("响应解析失败: {err}"))
-            } else {
-                Error::network(err)
-            }
-        })
+        self.map_err(map_net_error)
     }
 }
 
-/// 计算需要换 `us` 重试的 appid：本块在配置国家下没拿到 capsule 的子集。
+/// 计算需要换 `us` 重试的 appid：本块在配置国家下没拿到目录信息的子集。
 /// 配置国家已经是 `us` 时返回空（不再重试）。
-fn fallback_candidates(
+fn fallback_candidates<V>(
     chunk: &[String],
-    primary: &HashMap<String, String>,
+    primary: &HashMap<String, V>,
     country: &str,
 ) -> Vec<String> {
     if country == FALLBACK_COUNTRY {
@@ -200,6 +226,37 @@ impl SteamClient {
         self.fixture.as_ref()
     }
 
+    /// 幂等 GET（Steam 接口全部是 GET）：统一请求头 + 网络层失败重试一次。
+    ///
+    /// 代理 / VPN 切换或连接池里的旧 keep-alive 会让单次请求报 `error sending request`，
+    /// 重试一次通常即可恢复；超时不重试（等两遍只会更久）。HTTP 4xx/5xx 不在这里处理，
+    /// 由调用方按语义分类（限流 / 隐私 / 下架）。
+    async fn get(&self, url: &str, accept: &str) -> Result<reqwest::Response> {
+        let mut attempts = 0u32;
+        loop {
+            attempts += 1;
+            match self
+                .http
+                .get(url)
+                .header(ACCEPT, accept)
+                .header(ACCEPT_LANGUAGE, self.config.language.as_str())
+                .send()
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(err) => {
+                    let timeout = err.is_timeout();
+                    let err = map_net_error(err);
+                    if timeout || attempts >= 2 {
+                        return Err(err);
+                    }
+                    warn!(error = %err, "Steam 请求失败，250ms 后重试一次");
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
+    }
+
     /// 解析 ID：数字直接用；个性域名走社区 XML（无需 Key）。
     pub async fn resolve_id(&self, input: &str) -> Result<(String, &'static str, Vec<String>)> {
         let mut warnings = Vec::new();
@@ -222,12 +279,8 @@ impl SteamClient {
 
                 let url = vanity_resolve_url(&vanity);
                 let body = self
-                    .http
-                    .get(url)
-                    .header(ACCEPT, "application/xml, text/xml")
-                    .send()
-                    .await
-                    .net()?
+                    .get(&url, "application/xml, text/xml")
+                    .await?
                     .text()
                     .await
                     .net()?;
@@ -240,6 +293,49 @@ impl SteamClient {
                 Ok((id, "vanity", warnings))
             }
         }
+    }
+
+    /// 抓账号资料（昵称 / 头像 / 主页 / 区域 + 原始载荷）。
+    ///
+    /// 三条路径：
+    /// 1. fixture：`profile.json`（缺失时明确报错，调用方当作告警）；
+    /// 2. 配了 API Key：官方 `GetPlayerSummaries`（字段最全，含 `loccountrycode`）；
+    /// 3. 没有 Key：社区资料 XML（只有昵称 / 头像 / 主页，没有区域）。
+    pub async fn fetch_profile(&self, steam_id: &str) -> Result<AccountProfile> {
+        if let Some(fixture) = &self.fixture {
+            return fixture.account_profile(steam_id);
+        }
+
+        if let Some(api_key) = self.config.api_key.as_deref().filter(|key| !key.is_empty()) {
+            let url = player_summaries_url(api_key, steam_id);
+            let response = self.get(&url, "application/json").await?;
+
+            let status = response.status();
+            if !status.is_success() {
+                return Err(http_error_for("GetPlayerSummaries", status));
+            }
+
+            let value: serde_json::Value = response.json().await.net()?;
+            return parse_player_summaries(&value).ok_or_else(|| {
+                Error::rejected(format!(
+                    "Steam 未返回账号 {steam_id} 的资料：请确认 SteamID 正确、资料未隐藏"
+                ))
+            });
+        }
+
+        let url = profile_xml_url(steam_id);
+        let response = self.get(&url, "application/xml, text/xml").await?;
+        let status = response.status();
+        let body = response.text().await.net()?;
+
+        // 未登录 / 被限制时社区会返回 HTML 或登录页，必须报「无法读取」而不是造一个空资料
+        if !status.is_success() || !body.contains("<profile") {
+            return Err(Error::rejected(format!(
+                "无法读取社区资料（HTTP {status}）：配置 STEAM_API_KEY 可稳定获取昵称 / 头像 / 区域"
+            )));
+        }
+
+        Ok(parse_profile_xml(&body))
     }
 
     /// 抓取愿望单：公开接口优先，失败且配了 Key 就回退官方接口。
@@ -290,10 +386,6 @@ impl SteamClient {
                 ));
                 let (items, mut extra) = self.fetch_official_wishlist(&steam_id).await?;
                 warnings.append(&mut extra);
-                warnings.push(
-                    "官方接口只返回 appid：标题先显示为占位符，请用「补全元数据」拉取名称/价格/简介"
-                        .to_string(),
-                );
                 Ok(ImportFetch {
                     steam_id,
                     items,
@@ -343,13 +435,7 @@ impl SteamClient {
         };
 
         let url = owned_games_url(api_key, &steam_id, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if matches!(status.as_u16(), 401 | 403) {
@@ -422,13 +508,7 @@ impl SteamClient {
         };
 
         let url = player_achievements_url(api_key, steam_id, appid, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if status.as_u16() == 429 {
@@ -472,14 +552,7 @@ impl SteamClient {
 
         for page in 0..MAX_WISHLIST_PAGES {
             let url = public_wishlist_url(steam_id, page);
-            let response = self
-                .http
-                .get(url)
-                .header(ACCEPT, "application/json")
-                .header(ACCEPT_LANGUAGE, self.config.language.as_str())
-                .send()
-                .await
-                .net()?;
+            let response = self.get(&url, "application/json").await?;
 
             let status = response.status();
 
@@ -548,6 +621,9 @@ impl SteamClient {
             if fresh == 0 {
                 break;
             }
+            if page + 1 < MAX_WISHLIST_PAGES {
+                tokio::time::sleep(Duration::from_millis(WISHLIST_PAGE_DELAY_MS)).await;
+            }
         }
 
         if items.is_empty() {
@@ -574,12 +650,8 @@ impl SteamClient {
         for page in 0..MAX_OFFICIAL_PAGES {
             let url = official_wishlist_url(key, steam_id, cursor.as_deref());
             let value: serde_json::Value = self
-                .http
-                .get(url)
-                .header(ACCEPT, "application/json")
-                .send()
-                .await
-                .net()?
+                .get(&url, "application/json")
+                .await?
                 .json()
                 .await
                 .net()?;
@@ -643,9 +715,38 @@ impl SteamClient {
                 break;
             }
             cursor = Some(next);
+            tokio::time::sleep(Duration::from_millis(WISHLIST_PAGE_DELAY_MS)).await;
         }
 
+        // 官方接口只有 appid：批量补名称 / 类型 / 海报（匿名、50 条/次），
+        // 避免把一整页 `Steam App XXX` 占位符直接落库。
+        self.fill_wishlist_catalog(&mut items, &mut warnings).await;
+
         Ok((items, warnings))
+    }
+
+    /// 官方愿望单的批量补全：商店目录（`IStoreBrowseService`）带本地化名称、类型与海报。
+    ///
+    /// 失败是**非致命**的：保留占位标题，用户仍可稍后「补全元数据」逐条修复。
+    async fn fill_wishlist_catalog(&self, items: &mut [SourceItem], warnings: &mut Vec<String>) {
+        if items.is_empty() {
+            return;
+        }
+
+        let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
+        let catalog = self.store_catalog(&appids).await;
+        let missing = apply_store_catalog(items, &catalog);
+
+        if catalog.is_empty() {
+            warnings.push(
+                "商店目录接口没有返回名称（可能被限流）：标题先显示为占位符，可稍后用「补全元数据」修复"
+                    .to_string(),
+            );
+        } else if missing > 0 {
+            warnings.push(format!(
+                "{missing} 个条目没取到名称（可能已下架 / 区域不可见），标题先显示为占位符"
+            ));
+        }
     }
 
     /// 单条 appdetails（限流安全：调用方控制节奏）。
@@ -670,14 +771,7 @@ impl SteamClient {
         country: &str,
     ) -> Result<Option<SourceItem>> {
         let url = app_details_url(appid, country, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if status.as_u16() == 429 {
@@ -707,18 +801,20 @@ impl SteamClient {
             return;
         }
         let appids: Vec<String> = items.iter().map(|item| item.external_id.clone()).collect();
-        let capsules = self.store_library_capsules(&appids).await;
+        let catalog = self.store_catalog(&appids).await;
         for item in items.iter_mut() {
-            item.poster_url = capsules.get(&item.external_id).cloned();
+            item.poster_url = catalog
+                .get(&item.external_id)
+                .and_then(|entry| entry.poster_url.clone());
         }
     }
 
-    /// 取一批 appid 的竖版海报 URL（尽力而为：单个分块失败只记日志，返回已取到的部分）。
+    /// 批量取商店目录信息（名称 / 类型 / 竖版海报），尽力而为。
     ///
     /// 先配置国家；整块拿不到的再切 `us` 重试——国区上下文会把成人内容的 assets
     /// 整个隐藏，而不是逐条报错。任意一次请求失败都不能作废已取到的结果。
-    async fn store_library_capsules(&self, appids: &[String]) -> HashMap<String, String> {
-        let mut capsules = HashMap::new();
+    async fn store_catalog(&self, appids: &[String]) -> HashMap<String, StoreCatalogEntry> {
+        let mut catalog = HashMap::new();
         let chunk_count = appids.len().div_ceil(STORE_ITEMS_CHUNK);
         for (index, chunk) in appids.chunks(STORE_ITEMS_CHUNK).enumerate() {
             match self
@@ -727,7 +823,7 @@ impl SteamClient {
             {
                 Ok(primary) => {
                     let missing = fallback_candidates(chunk, &primary, &self.config.country);
-                    capsules.extend(primary);
+                    catalog.extend(primary);
 
                     if !missing.is_empty() {
                         // 回退失败只损失缺的这几条：主国家结果照常保留
@@ -735,14 +831,14 @@ impl SteamClient {
                             .store_items_for_country(&missing, FALLBACK_COUNTRY)
                             .await
                         {
-                            Ok(fallback) => capsules.extend(fallback),
+                            Ok(fallback) => catalog.extend(fallback),
                             Err(err) => {
-                                warn!(error = %err, "竖版海报换区重试失败（保留主国家结果）")
+                                warn!(error = %err, "商店目录换区重试失败（保留主国家结果）")
                             }
                         }
                     }
                 }
-                Err(err) => warn!(error = %err, "竖版海报请求失败（跳过该批）"),
+                Err(err) => warn!(error = %err, "商店目录请求失败（跳过该批）"),
             }
 
             // 与 appdetails 一样按节流间隔排队（只在还有下一块时等待），
@@ -751,23 +847,16 @@ impl SteamClient {
                 tokio::time::sleep(Duration::from_millis(self.config.enrich_delay_ms)).await;
             }
         }
-        capsules
+        catalog
     }
 
     async fn store_items_for_country(
         &self,
         appids: &[String],
         country: &str,
-    ) -> Result<HashMap<String, String>> {
+    ) -> Result<HashMap<String, StoreCatalogEntry>> {
         let url = store_items_url(appids, country, &self.config.language);
-        let response = self
-            .http
-            .get(url)
-            .header(ACCEPT, "application/json")
-            .header(ACCEPT_LANGUAGE, self.config.language.as_str())
-            .send()
-            .await
-            .net()?;
+        let response = self.get(&url, "application/json").await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -777,16 +866,54 @@ impl SteamClient {
         }
 
         let value: serde_json::Value = response.json().await.net()?;
-        Ok(parse_library_capsules(&value))
+        Ok(parse_store_catalog(&value))
     }
 
     /// 批量补全：fixture 直接读文件，线上按并发 + 间隔节流。
+    ///
+    /// 使用配置区域（国区不售时回退 `us`），并补竖版海报。
     pub async fn app_details_batch(&self, appids: &[String]) -> Result<AppDetailsBatch> {
+        self.app_details_batch_inner(appids, None, true).await
+    }
+
+    /// 以指定区域抓一批详情（账号区域价格用）。
+    ///
+    /// 刻意**不做** `us` 回退、也不抓海报：账号区域不售时应该记录「该区域没有售价」，
+    /// 拿美元价冒充账号区域价会误导用户。
+    pub async fn app_details_batch_for_country(
+        &self,
+        appids: &[String],
+        country: &str,
+    ) -> Result<AppDetailsBatch> {
+        self.app_details_batch_inner(appids, Some(country), false)
+            .await
+    }
+
+    async fn app_details_batch_inner(
+        &self,
+        appids: &[String],
+        country: Option<&str>,
+        fill_posters: bool,
+    ) -> Result<AppDetailsBatch> {
         if let Some(fixture) = &self.fixture {
+            // fixture 的 appdetails 只按生成时的区域抓取：换区账号不能拿它冒充区域价格
+            if let Some(requested) = country
+                && let Some(fixture_country) = fixture.store_country.as_deref()
+                && !requested.eq_ignore_ascii_case(fixture_country)
+            {
+                return Ok(AppDetailsBatch {
+                    items: Vec::new(),
+                    warnings: vec![format!(
+                        "fixture 的商店详情按 {fixture_country} 区域生成，没有 {requested} 区域的价格：本次按「该区域无售价」处理"
+                    )],
+                    last_error: None,
+                });
+            }
+
             let mut items = Vec::new();
             let mut warnings = Vec::new();
             for appid in appids {
-                match fixture.app_details(appid) {
+                match fixture.app_details_for_country(appid, country) {
                     Some(response) if response.success => match &response.data {
                         Some(data) => items.push(data.to_source_item(appid)),
                         None => warnings.push(format!("{appid}: fixture 里 data 为空")),
@@ -818,7 +945,12 @@ impl SteamClient {
                 let appid = appid.clone();
                 let client = self;
                 async move {
-                    let result = client.fetch_app_details_live(&appid).await;
+                    let result = match country {
+                        Some(country) => {
+                            client.fetch_app_details_for_country(&appid, country).await
+                        }
+                        None => client.fetch_app_details_live(&appid).await,
+                    };
                     (appid, result)
                 }
             });
@@ -852,7 +984,9 @@ impl SteamClient {
 
         // 竖版海报在新资产接口里（appdetails 只有横版 header）；
         // 旧式 library_600x900 路径对成人 / 区域受限内容已经 404
-        self.fill_poster_assets(&mut items).await;
+        if fill_posters {
+            self.fill_poster_assets(&mut items).await;
+        }
 
         Ok(AppDetailsBatch {
             items,
@@ -884,8 +1018,9 @@ mod tests {
 
     /// P1 回归：reqwest 的错误 Display 带完整请求 URL（含 query），而官方接口的
     /// API Key 就在 query 里——`net()` 必须脱敏，否则密钥会进日志/import_runs/API 响应。
+    /// host/path 要保留，方便定位是哪个接口失败。
     #[tokio::test]
-    async fn net_redacts_url_and_query() {
+    async fn net_redacts_query_but_keeps_the_endpoint() {
         let client = reqwest::Client::new();
         let err = client
             .get("http://127.0.0.1:1/IWishlistService/GetWishlist/v1/?key=SECRET_KEY_FOR_TEST&steamid=1")
@@ -900,8 +1035,12 @@ mod tests {
             "错误信息里不能出现 API Key：{text}"
         );
         assert!(
-            !text.contains("IWishlistService"),
-            "错误信息里不应包含请求 URL：{text}"
+            !text.contains("steamid=") && !text.contains("key="),
+            "query 必须被去掉（可能含 Key / cursor）：{text}"
+        );
+        assert!(
+            text.contains("http://127.0.0.1:1/IWishlistService/GetWishlist/v1/"),
+            "应保留 host/path 方便定位接口：{text}"
         );
         assert!(
             matches!(err, acgn_core::Error::Network(_)),
@@ -963,7 +1102,8 @@ mod tests {
         all.insert("2".to_string(), "y".to_string());
 
         assert!(fallback_candidates(&chunk, &all, "cn").is_empty());
-        assert_eq!(fallback_candidates(&chunk, &HashMap::new(), "cn"), chunk);
+        let empty: HashMap<String, String> = HashMap::new();
+        assert_eq!(fallback_candidates(&chunk, &empty, "cn"), chunk);
     }
 
     /// fixture 缺 `library.json` / `achievements.json` 时必须明确报错，

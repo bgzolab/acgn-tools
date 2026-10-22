@@ -18,6 +18,8 @@ pub struct GameFilters {
     pub media_kind: Option<MediaKind>,
     pub q: Option<String>,
     pub favorite: Option<bool>,
+    /// 只看某个数据源账号关联的条目（库存 + 愿望单）
+    pub account_id: Option<i64>,
 }
 
 impl GameFilters {
@@ -28,6 +30,7 @@ impl GameFilters {
             media_kind: query.media_kind,
             q: query.q.clone(),
             favorite: query.favorite,
+            account_id: query.account_id,
         }
     }
 }
@@ -78,6 +81,12 @@ fn apply_filters(qb: &mut QueryBuilder<'_, Sqlite>, filters: &GameFilters) {
     }
     if filters.favorite == Some(true) {
         qb.push(" AND e.favorite = 1");
+    }
+    if let Some(account_id) = filters.account_id {
+        // EXISTS 而不是 JOIN：一个游戏可能同时关联多个账号，JOIN 会让分页计数重复
+        qb.push(" AND EXISTS (SELECT 1 FROM game_accounts ga WHERE ga.game_id = g.id AND ga.account_id = ")
+            .push_bind(account_id)
+            .push(")");
     }
     if let Some(term) = filters
         .q
@@ -260,10 +269,7 @@ impl Db {
         .await
         .db()?;
 
-        Ok(GameWithEntry {
-            game: existing.game,
-            entry,
-        })
+        Ok(GameWithEntry::new(existing.game, entry))
     }
 
     /// 批量删除条目（本地动作），返回实际删除的行数。

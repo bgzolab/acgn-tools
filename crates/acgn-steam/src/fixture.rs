@@ -8,19 +8,24 @@
 //!   library.json       # GetOwnedGames 形态：{ "response": { "game_count": n, "games": [...] } }（可选）
 //!   achievements.json  # { "<appid>": { "achieved": n, "total": m } }（可选）
 //!   appdetails.json    # { "<appid>": { "success": true, "data": { ...appdetails... } } }
+//!   profile.json       # { "steam_id": "...", "country": "cn", "player": { ...GetPlayerSummaries 的 player... } }（可选）
 //! ```
 //!
 //! 也可以直接指向单个 `wishlist.json`（同目录下的其它文件会被自动发现）。
 //! `library.json` 缺失时库存导入会明确报错，而不是静默返回空库存；
-//! `achievements.json` 缺失时成就同步会明确报错，不会假装「所有游戏都没有成就」。
+//! `achievements.json` 缺失时成就同步会明确报错，不会假装「所有游戏都没有成就」；
+//! `profile.json` 缺失时账号仍会创建（只有 ID），只是没有昵称 / 头像。
+//! `country` 表示 `appdetails.json` 是按哪个商店区域生成的：真实模式按账号区域取价，
+//! fixture 只有这一份数据，换区时会按「该区域无售价」处理，避免拿错币种。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use acgn_core::{AchievementProgress, Error, Result};
+use acgn_core::{AccountProfile, AchievementProgress, Error, Result};
 
 use crate::appdetails::AppDetailsResponse;
 use crate::library::OwnedGame;
+use crate::profile::player_to_profile;
 use crate::wishlist::WishlistItem;
 
 /// 载入后的 fixture 数据。
@@ -33,10 +38,15 @@ pub struct FixtureData {
     /// 成就进度（appid → 达成/总数；文件缺失时为空）
     pub achievements: BTreeMap<String, AchievementProgress>,
     pub appdetails: BTreeMap<String, AppDetailsResponse>,
+    /// 账号资料（GetPlayerSummaries 的 player 对象；文件缺失时为空）
+    pub profile: Option<serde_json::Value>,
+    /// `appdetails.json` 生成时的商店区域（profile.json 的 `country`）
+    pub store_country: Option<String>,
     pub wishlist_path: PathBuf,
     pub library_path: Option<PathBuf>,
     pub achievements_path: Option<PathBuf>,
     pub appdetails_path: Option<PathBuf>,
+    pub profile_path: Option<PathBuf>,
 }
 
 impl FixtureData {
@@ -117,16 +127,24 @@ impl FixtureData {
             None => BTreeMap::new(),
         };
 
+        let (profile, store_country) = match paths.profile.as_ref().filter(|path| path.exists()) {
+            Some(profile_path) => load_profile(profile_path)?,
+            None => (None, None),
+        };
+
         Ok(Self {
             steam_id,
             wishlist,
             library,
             achievements,
             appdetails,
+            profile,
+            store_country,
             wishlist_path: paths.wishlist,
             library_path: paths.library,
             achievements_path: paths.achievements,
             appdetails_path: paths.appdetails,
+            profile_path: paths.profile,
         })
     }
 
@@ -150,6 +168,62 @@ impl FixtureData {
 
     pub fn app_details(&self, appid: &str) -> Option<&AppDetailsResponse> {
         self.appdetails.get(appid)
+    }
+
+    /// 按区域取详情：fixture 的 `appdetails.json` 只按一个区域（生成时的 `cc`）抓取，
+    /// 请求其它区域时返回 `None`，调用方会记录「该区域无售价」而不是拿错币种冒充。
+    pub fn app_details_for_country(
+        &self,
+        appid: &str,
+        country: Option<&str>,
+    ) -> Option<&AppDetailsResponse> {
+        if let Some(requested) = country
+            && let Some(fixture_country) = self.store_country.as_deref()
+            && !requested.eq_ignore_ascii_case(fixture_country)
+        {
+            return None;
+        }
+        self.app_details(appid)
+    }
+
+    /// 账号资料：fixture 里没有 `profile.json` 时明确报错（调用方当作告警处理，
+    /// 账号仍会创建，只是没有昵称 / 头像）。
+    ///
+    /// fixture 只有一份演示资料，必须校验请求的 steamID 与它一致：否则随便输入一个
+    /// 数字 ID 都会把「ACGN Demo」的昵称 / 头像 / 区域挂到另一个账号上，演示模式里
+    /// 很难看出这是假数据。
+    pub fn account_profile(&self, steam_id: &str) -> Result<AccountProfile> {
+        let Some(path) = self.profile_path.as_ref().filter(|path| path.exists()) else {
+            return Err(Error::rejected(
+                "离线 fixture 未提供 profile.json：无法读取账号昵称 / 头像（重新生成 fixture 或改用真实网络）",
+            ));
+        };
+        if let Some(fixture_id) = self.steam_id.as_deref()
+            && fixture_id != steam_id
+        {
+            return Err(Error::rejected(format!(
+                "fixture 账号资料固定为 steam_id={fixture_id}，与请求的 {steam_id} 不一致（fixture 模式请使用内置 ID）"
+            )));
+        }
+        let player = self
+            .profile
+            .as_ref()
+            .ok_or_else(|| Error::rejected(format!("fixture 账号资料为空：{}", path.display())))?;
+        if let Some(player_id) = player.get("steamid").and_then(|value| value.as_str())
+            && player_id != steam_id
+        {
+            return Err(Error::rejected(format!(
+                "fixture 账号资料的 steamid={player_id} 与请求的 {steam_id} 不一致（{}）",
+                path.display()
+            )));
+        }
+
+        player_to_profile(player).ok_or_else(|| {
+            Error::invalid(format!(
+                "fixture 账号资料结构不对（{}）：应包含 player 对象",
+                path.display()
+            ))
+        })
     }
 }
 
@@ -199,12 +273,46 @@ fn load_achievements(path: &Path) -> Result<BTreeMap<String, AchievementProgress
     })
 }
 
+/// 载入 `profile.json`：`{ "country": "cn", "player": {...} }`、GetPlayerSummaries 原始响应
+/// 或裸 player 对象。`country` 表示 `appdetails.json` 是按哪个区域抓的。
+fn load_profile(path: &Path) -> Result<(Option<serde_json::Value>, Option<String>)> {
+    let raw = std::fs::read_to_string(path).map_err(Error::storage)?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
+        Error::invalid(format!(
+            "profile fixture 不是合法 JSON（{}）: {err}",
+            path.display()
+        ))
+    })?;
+
+    let country = value
+        .get("country")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    let player = value
+        .get("player")
+        .cloned()
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("players"))
+                .and_then(|players| players.as_array())
+                .and_then(|players| players.first())
+                .cloned()
+        })
+        .or_else(|| value.as_object().map(|_| value.clone()));
+
+    Ok((player, country))
+}
+
 /// fixture 目录里各个文件的路径。
 struct FixturePaths {
     wishlist: PathBuf,
     library: Option<PathBuf>,
     achievements: Option<PathBuf>,
     appdetails: Option<PathBuf>,
+    profile: Option<PathBuf>,
 }
 
 fn resolve_paths(path: &Path) -> Result<FixturePaths> {
@@ -221,6 +329,7 @@ fn resolve_paths(path: &Path) -> Result<FixturePaths> {
             library: Some(path.join("library.json")),
             achievements: Some(path.join("achievements.json")),
             appdetails: Some(path.join("appdetails.json")),
+            profile: Some(path.join("profile.json")),
         });
     }
 
@@ -231,6 +340,7 @@ fn resolve_paths(path: &Path) -> Result<FixturePaths> {
             library: Some(parent.join("library.json")),
             achievements: Some(parent.join("achievements.json")),
             appdetails: Some(parent.join("appdetails.json")),
+            profile: Some(parent.join("profile.json")),
         });
     }
 
@@ -271,9 +381,33 @@ mod tests {
             r#"{"1":{"achieved":3,"total":3}}"#,
         )
         .expect("写 achievements fixture");
+        std::fs::write(
+            dir.join("profile.json"),
+            r#"{"steam_id":"76561198000000000","country":"cn","player":{"steamid":"76561198000000000","personaname":"Fixture","avatarfull":"https://avatars.example/f.jpg","loccountrycode":"US"}}"#,
+        )
+        .expect("写 profile fixture");
 
         let fixture = FixtureData::load(&dir).expect("fixture 应能载入");
         assert_eq!(fixture.steam_id.as_deref(), Some("76561198000000000"));
+
+        let profile = fixture
+            .account_profile("76561198000000000")
+            .expect("账号资料应能载入");
+        assert_eq!(profile.display_name.as_deref(), Some("Fixture"));
+        assert_eq!(profile.country_code.as_deref(), Some("US"));
+        assert!(
+            fixture.account_profile("76561198000000009").is_err(),
+            "fixture 只有一份资料，steamID 不一致时必须报错"
+        );
+        assert_eq!(fixture.store_country.as_deref(), Some("cn"));
+        assert!(
+            fixture.app_details_for_country("1", Some("cn")).is_some(),
+            "fixture 区域内的详情应可用"
+        );
+        assert!(
+            fixture.app_details_for_country("1", Some("us")).is_none(),
+            "其它区域不能拿 fixture 价格冒充"
+        );
 
         let response = fixture.app_details("1").expect("应有详情");
         let data = response.data.as_ref().expect("应有 data");
@@ -320,6 +454,14 @@ mod tests {
         assert!(
             fixture.achievements_path.is_some(),
             "路径仍应指向预期的 achievements.json"
+        );
+        assert!(
+            fixture.profile_path.is_some(),
+            "路径仍应指向预期的 profile.json"
+        );
+        assert!(
+            fixture.account_profile("76561198000000000").is_err(),
+            "缺 profile.json 时账号资料应明确报错"
         );
 
         std::fs::remove_dir_all(&dir).ok();

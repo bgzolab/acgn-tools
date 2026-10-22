@@ -59,6 +59,10 @@ pub struct SourceItem {
     /// `library_entries.source_playtime_minutes`；是否采纳为展示值由合并规则决定
     /// （用户手填过的时长优先，见 `docs/design.md` §4.5）。
     pub playtime_minutes: Option<i64>,
+    /// 最近两周游玩时长（分钟，Steam 的 `playtime_2weeks`）。账号级数据，不参与条目合并。
+    pub playtime_2weeks_minutes: Option<i64>,
+    /// 最后一次游玩的时刻（Steam 的 `rtime_last_played`）。账号级数据。
+    pub last_played_at: Option<DateTime<Utc>>,
     /// 来源侧原始载荷，落库到 `games.metadata_json`，方便以后补字段
     pub metadata: Option<serde_json::Value>,
     /// 这一份数据的详细程度（决定能否覆盖已有的封面等字段）
@@ -209,6 +213,8 @@ pub struct GameListQuery {
     /// `added_desc`（默认） / `added_asc` / `updated_desc` / `title` / `review_desc` / `rating_desc` / `priority`
     pub sort: Option<String>,
     pub favorite: Option<bool>,
+    /// 只看某个数据源账号关联的条目（库存 + 愿望单）
+    pub account_id: Option<i64>,
     pub page: Option<i64>,
     pub per_page: Option<i64>,
 }
@@ -254,6 +260,15 @@ pub struct DeleteGamesRequest {
 pub struct DeleteGamesResponse {
     /// 实际删除的行数（未知 id 静默忽略）
     pub deleted: i64,
+}
+
+/// 数据源账号的补丁（`PATCH /api/accounts/{id}`）。
+///
+/// 目前只有价格区域可以手动改：Steam 资料里的 `loccountrycode` 常常为空，
+/// 也未必等于账号的实际购买区。字段缺省 = 不改动；空串 = 清空覆盖、跟随资料。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AccountPatch {
+    pub country_code: Option<String>,
 }
 
 /// 统计信息（看板页）。
@@ -340,6 +355,9 @@ pub struct EnrichSummary {
     pub succeeded: i64,
     pub failed: i64,
     pub skipped: i64,
+    /// 本轮处理完的账号区域价格条数（同一游戏的不同账号区域各算一条；
+    /// 含「该区域没有售价」的已确认条目）
+    pub account_prices: i64,
     pub warnings: Vec<String>,
     pub source_mode: String,
     pub duration_ms: i64,

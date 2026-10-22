@@ -3,6 +3,7 @@
 //! 约定：所有接口挂在 `/api` 下；前端构建产物存在时同一端口托管静态站点，
 //! 未来的 Tauri 客户端要么内置这套 axum（进程内调用），要么直接打这个 HTTP 端口。
 
+pub mod accounts;
 pub mod enrich;
 pub mod games;
 pub mod health;
@@ -42,6 +43,13 @@ pub fn api_router(state: AppState) -> Router<AppState> {
             "/games/{id}/refresh-metadata",
             post(games::refresh_metadata),
         )
+        // 数据源账号
+        .route("/accounts", get(accounts::list_accounts))
+        .route("/accounts/resolve", post(accounts::resolve_account))
+        .route(
+            "/accounts/{id}",
+            axum::routing::patch(accounts::patch_account).delete(accounts::delete_account),
+        )
         // 导入 / 同步
         .route(
             "/imports",
@@ -75,13 +83,17 @@ async fn api_index() -> Json<serde_json::Value> {
             { "method": "GET",   "path": "/api/health",                    "desc": "健康检查" },
             { "method": "GET",   "path": "/api/config",                    "desc": "前端配置（状态枚举、数据源模式）" },
             { "method": "GET",   "path": "/api/stats",                     "desc": "看板统计" },
-            { "method": "GET",   "path": "/api/games",                     "desc": "列表：status/source/q/sort/page/per_page/favorite" },
+            { "method": "GET",   "path": "/api/accounts",                  "desc": "数据源账号列表（含库存/愿望单条目数）" },
+            { "method": "POST",  "path": "/api/accounts/resolve",          "desc": "添加账号：解析 steamID / 个性域名并抓取资料（幂等）" },
+            { "method": "PATCH", "path": "/api/accounts/{id}",             "desc": "修改账号价格区域（空串 = 跟随 Steam 资料）" },
+            { "method": "DELETE","path": "/api/accounts/{id}",             "desc": "删除账号（关联级联删除，游戏条目保留）" },
+            { "method": "GET",   "path": "/api/games",                     "desc": "列表：status/source/account_id/q/sort/page/per_page/favorite" },
             { "method": "GET",   "path": "/api/games/{id}",                "desc": "详情" },
             { "method": "PATCH", "path": "/api/games/{id}",                "desc": "改状态/评分/进度/备注/收藏" },
             { "method": "DELETE","path": "/api/games/{id}",                "desc": "删除条目（本地动作；来源里还在的下次导入会重新加回）" },
             { "method": "POST",  "path": "/api/games/delete",              "desc": "批量删除（多选清理，未知 id 忽略）" },
             { "method": "POST",  "path": "/api/games/{id}/refresh-metadata", "desc": "抓取该条目的商店详情" },
-            { "method": "POST",  "path": "/api/imports/steam/wishlist",    "desc": "导入 Steam 愿望单" },
+            { "method": "POST",  "path": "/api/imports/steam/wishlist",    "desc": "导入 Steam 愿望单（account_id 或 steam_id，自动建号）" },
             { "method": "POST",  "path": "/api/imports/steam/library",     "desc": "导入 Steam 库存（已拥有游戏 + 游玩时长，需要 STEAM_API_KEY）" },
             { "method": "POST",  "path": "/api/imports/steam/achievements","desc": "检查成就进度（全成就 → 已通关，逐游戏查询）" },
             { "method": "POST",  "path": "/api/imports",                   "desc": "通用 JSON 导入（扁平 SourceItem，合并语义）" },

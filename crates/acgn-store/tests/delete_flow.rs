@@ -33,6 +33,7 @@ async fn import(db: &Db, items: &[SourceItem]) -> ImportSummary {
         source_mode: "test",
         extra_warnings: Vec::new(),
         missing_scope: MissingScope::Wishlist,
+        account_id: None,
     })
     .await
     .expect("导入不应失败")

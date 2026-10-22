@@ -151,6 +151,8 @@ pub fn wishlist_to_source_item(appid: &str, item: &WishlistItem) -> SourceItem {
         source_added_at: from_unix(item.added),
         // 愿望单接口不提供游玩时长
         playtime_minutes: None,
+        playtime_2weeks_minutes: None,
+        last_played_at: None,
         metadata: serde_json::to_value(item).ok(),
         // 愿望单接口只有通用封面 URL，属于「列表档」
         metadata_level: MetadataLevel::List,
