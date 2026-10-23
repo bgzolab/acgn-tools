@@ -16,6 +16,21 @@ GET {{host}}/api/config
 ### 看板统计
 GET {{host}}/api/stats
 
+### 游戏新闻（已拥有游戏，按发布时间倒序）
+GET {{host}}/api/news?page=1&per_page=20
+
+### 游戏新闻：只看某个条目
+GET {{host}}/api/news?game_id=1
+
+### 新闻源覆盖率（已同步 / 待同步 / 失败）
+GET {{host}}/api/news/status
+
+### 启动全量新闻同步（后台任务：拉取所有已拥有游戏，立即返回进度）
+POST {{host}}/api/news/sync
+
+### 查询当前 / 最近一轮新闻同步进度（前端轮询；done/total/ETA）
+GET {{host}}/api/news/sync/status
+
 ### 账号列表（含库存 / 愿望单条目数）
 GET {{host}}/api/accounts
 

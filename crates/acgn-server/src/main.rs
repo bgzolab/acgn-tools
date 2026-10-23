@@ -121,7 +121,21 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// 全量新闻同步可能跑几分钟：任何会继续写库的启动路径（serve / seed）都要先把
+/// 上次进程遗留的 running 记录收敛，否则同步历史里会永远显示「进行中」。
+async fn cleanup_stale_news_runs(db: &Db) {
+    match db
+        .fail_stale_news_runs("服务重启，上一轮新闻同步已中断")
+        .await
+    {
+        Ok(0) => {}
+        Ok(count) => tracing::warn!(count, "已把中断的新闻同步记录标记为失败"),
+        Err(err) => tracing::warn!(error = %err, "清理中断的新闻同步记录失败"),
+    }
+}
+
 async fn serve(config: AppConfig, db: Db, steam: SteamClient) -> anyhow::Result<()> {
+    cleanup_stale_news_runs(&db).await;
     let state = AppState::new(db, steam, config.clone());
     let app = routes::build_app(state.clone());
 
@@ -146,6 +160,7 @@ async fn seed(
     enrich: bool,
     enrich_limit: i64,
 ) -> anyhow::Result<()> {
+    cleanup_stale_news_runs(&db).await;
     let input = steam_id
         .or_else(|| steam.fixture().and_then(|fixture| fixture.steam_id.clone()))
         .context("请用 --steam-id 指定 SteamID64 / 个性域名，或在 fixture 里写 steam_id")?;

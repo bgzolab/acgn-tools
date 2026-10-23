@@ -124,17 +124,10 @@ impl Db {
         page: i64,
         per_page: i64,
     ) -> Result<Page<GameWithEntry>> {
-        let page = page.max(1);
+        let page = page.clamp(1, 1_000_000);
         let per_page = per_page.clamp(1, 500);
 
-        let mut qb = QueryBuilder::new(SELECT_GAME_ENTRY);
-        apply_filters(&mut qb, filters);
-        qb.push(order_sql(sort));
-        qb.push(" LIMIT ").push_bind(per_page);
-        qb.push(" OFFSET ").push_bind((page - 1) * per_page);
-
-        let rows: Vec<GameEntryRow> = qb.build_query_as().fetch_all(&self.pool).await.db()?;
-
+        // 先 count：把 page 夹到真实总页数，避免 OFFSET 扫过整个索引后返回空页。
         let mut count_qb = QueryBuilder::new(COUNT_GAME_ENTRY);
         apply_filters(&mut count_qb, filters);
         let total: i64 = count_qb
@@ -142,6 +135,18 @@ impl Db {
             .fetch_one(&self.pool)
             .await
             .db()?;
+
+        let total_pages = total.saturating_add(per_page - 1) / per_page;
+        let page = page.min(total_pages.max(1));
+        let offset = (page - 1).saturating_mul(per_page);
+
+        let mut qb = QueryBuilder::new(SELECT_GAME_ENTRY);
+        apply_filters(&mut qb, filters);
+        qb.push(order_sql(sort));
+        qb.push(" LIMIT ").push_bind(per_page);
+        qb.push(" OFFSET ").push_bind(offset);
+
+        let rows: Vec<GameEntryRow> = qb.build_query_as().fetch_all(&self.pool).await.db()?;
 
         let items = rows
             .into_iter()

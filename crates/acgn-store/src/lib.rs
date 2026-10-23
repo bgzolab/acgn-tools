@@ -10,6 +10,7 @@ mod achievements;
 mod error;
 mod games;
 mod imports;
+mod news;
 mod rows;
 mod stats;
 
@@ -20,6 +21,7 @@ pub use achievements::{AchievementOutcome, PendingAchievement};
 pub use db::Db;
 pub use games::GameFilters;
 pub use imports::{ImportRequest, MetadataOutcome, MissingScope, PendingMetadata, RunCounts};
+pub use news::{NewsTarget, NewsUpsert};
 pub use rows::{GameEntryRow, ImportRunRow};
 
 /// 便于测试与外部构建内存库。

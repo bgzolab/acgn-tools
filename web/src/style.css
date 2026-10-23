@@ -659,6 +659,177 @@ p {
   text-decoration: line-through;
 }
 
+/* ------------------------------------------------------------------ 游戏新闻 */
+
+.news-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.news-card {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 14px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.news-card:hover,
+.news-card:focus-visible {
+  border-color: rgba(124, 140, 255, 0.4);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  outline: none;
+}
+
+.news-cover {
+  width: 84px;
+  aspect-ratio: 2 / 3;
+  align-self: start;
+}
+
+.news-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.news-meta {
+  row-gap: 4px;
+}
+
+.news-meta .badge {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.news-title {
+  font-size: 15px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.news-summary {
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 全量同步进度 */
+.sync-panel {
+  margin-bottom: 16px;
+}
+
+.sync-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+
+.sync-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #a371f7);
+  transition: width 0.3s ease;
+}
+
+/* 新闻全文弹窗（独立类名，避免与同步说明弹窗互相覆盖） */
+.news-modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(4, 6, 10, 0.72);
+  backdrop-filter: blur(3px);
+}
+
+.news-modal {
+  width: min(780px, 100%);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.news-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.news-modal-head h2 {
+  margin: 8px 0 0;
+  font-size: 18px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.news-modal-heading {
+  min-width: 0;
+}
+
+.news-modal-full {
+  flex: 1;
+  padding: 16px 20px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  font-size: 13.5px;
+  line-height: 1.75;
+}
+
+.news-modal-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--panel);
+}
+
+@media (max-width: 640px) {
+  .news-card {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .news-cover {
+    width: 64px;
+  }
+
+  .news-modal-mask {
+    padding: 12px;
+  }
+
+  .news-modal-head,
+  .news-modal-full,
+  .news-modal-foot {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
 /* ------------------------------------------------------------------ 抽屉 */
 
 .drawer-mask {

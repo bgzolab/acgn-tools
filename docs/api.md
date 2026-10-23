@@ -17,7 +17,8 @@ Runnable samples for every endpoint live in [`api.http`](api.http) (VS Code REST
 |---|---|---|
 | 400 | `invalid` | malformed query / body / path (bad enum value, non-numeric id, …) |
 | 404 | `not_found` | unknown resource or route |
-| 422 | `source_rejected` | upstream refused (private profile, rate limit) — retry later |
+| 422 | `source_rejected` | upstream refused (private profile, bad key, …) — retry later |
+| 429 | `rate_limited` | upstream rate limit — back off and retry later |
 | 502 | `network` / `upstream` | upstream unreachable or returned something unparsable |
 | 500 | `storage` / `other` | database or unexpected failure |
 
@@ -44,6 +45,10 @@ Metadata follows the source; personal state follows the local database — see
 | GET | `/api/health` | Liveness probe, version, uptime, data-source mode |
 | GET | `/api/config` | Frontend config: status list, Steam mode, country/language |
 | GET | `/api/stats` | Dashboard aggregates |
+| GET | `/api/news` | Game news across owned Steam games, newest first (`page`, `per_page`, `game_id`) |
+| GET | `/api/news/status` | News-source coverage: owned / synced / pending / failed / item counts |
+| GET | `/api/news/sync/status` | Live progress of the current / last full news sync (`done`, `total`, ETA, …) |
+| POST | `/api/news/sync` | Start a background full sync of every owned game's news feed |
 | GET | `/api/accounts` | Source accounts with owned / wishlist counts |
 | POST | `/api/accounts/resolve` | Add an account: resolve steamID / vanity / profile link, fetch its profile (idempotent) |
 | PATCH | `/api/accounts/{id}` | Set or clear the account's regional price override |
@@ -97,6 +102,118 @@ takes `country_code` (two letters, e.g. `us`; empty string clears the override a
 profile); changing the effective region clears that account's cached prices. `DELETE` returns
 `204`, removes only `game_accounts` rows, and keeps the games / personal state.
 
+### Game news
+
+News is collected from Steam's per-appid announcement RSS and archived locally. Only **owned**
+games are polled: a game counts as owned when an account link has
+`source_playtime_minutes` (0 included), or for legacy rows without account links, when the
+library entry has `source_playtime_minutes`. Wishlist-only entries are ignored.
+
+#### GET /api/news
+
+`page` (default 1), `per_page` (default 20, max 100) and optional `game_id`. `page` is clamped
+to the last page after the count query, so an out-of-range page returns the final page instead
+of scanning a huge OFFSET.
+
+```json
+{
+  "items": [
+    {
+      "id": 7,
+      "game_id": 12,
+      "source": "steam",
+      "external_id": "1245620",
+      "game_title": "ELDEN RING",
+      "game_title_zh": "艾尔登法环",
+      "game_cover_url": "…",
+      "game_poster_url": "…",
+      "language": "schinese",
+      "title": "Patch notes",
+      "summary": "Full plain-text body (HTML stripped, not truncated)",
+      "url": "https://steamcommunity.com/games/1245620/announcements/detail/…",
+      "author": "steam",
+      "published_at": "2026-10-20T12:00:00Z",
+      "fetched_at": "2026-10-22T07:00:00Z"
+    }
+  ],
+  "total": 1, "page": 1, "per_page": 20, "total_pages": 1
+}
+```
+
+Results are ordered by `published_at DESC` (ties by id). The page reads SQLite only; it never
+performs RSS requests.
+
+#### GET /api/news/status
+
+```json
+{
+  "language": "schinese",
+  "owned_games": 42,
+  "synced_games": 30,
+  "pending_games": 12,
+  "failed_games": 1,
+  "news_items": 315,
+  "last_synced_at": "2026-10-22T07:00:00Z"
+}
+```
+
+`pending_games` = owned − ever-succeeded. `failed_games` counts feeds whose most recent attempt
+failed; they keep their previously archived news and are retried on the next sync.
+
+#### POST /api/news/sync
+
+Starts one **background pass over every owned game** and returns immediately. There is no batch
+size and no request body. Calling it while a pass is already running returns the current progress
+instead of starting another one.
+
+```json
+{
+  "running": true,
+  "total": 42,
+  "done": 0,
+  "succeeded": 0,
+  "failed": 0,
+  "items_added": 0,
+  "items_updated": 0,
+  "items_unchanged": 0,
+  "current_game": null,
+  "started_at": "2026-10-22T07:00:00Z",
+  "finished_at": null,
+  "elapsed_ms": 0,
+  "eta_seconds": null,
+  "warnings": []
+}
+```
+
+Each feed is fetched sequentially and written as soon as it finishes, so `GET /api/news` already
+shows new items while the pass is running. `done` counts finished feeds (success **and** failure);
+`eta_seconds` is estimated from the average time per finished feed.
+
+- A missing / delisted feed (HTTP 404), or an HTML page for an app without a community hub
+  (Portal, Portal 2, …), is treated as an empty feed. Other per-game failures are reported in
+  `warnings` / `failed` without failing the whole pass. Three consecutive failures stop the pass
+  early; the remaining feeds are picked up on the next run. HTTP 429 stops the pass immediately
+  without marking that feed failed; it is counted as done / skipped so progress and run counts
+  still add up.
+- The full announcement text is stored (HTML stripped, paragraph breaks preserved) — the API does
+  not truncate `summary`. The web UI shows an excerpt in the list and the full text in a modal.
+- A `steam_news` run is written to `import_runs` (`seen` = feed attempts, `added` / `updated` /
+  `unchanged` = news rows, `skipped` = failed feeds + the rate-limited feed that stopped the pass).
+  If every attempted feed fails the run is
+  marked `failed`. With no owned games, `running` is `false`, `total` is `0` and a warning is
+  returned; no run row is written.
+- RSS request language / region follow `STEAM_LANGUAGE` / `STEAM_COUNTRY` (default
+  `schinese` / `cn`). The language is part of the archive key, so changing it hides the previous
+  language's rows instead of deleting them.
+
+#### GET /api/news/sync/status
+
+Returns the same shape as the POST response, for polling. The state is kept in memory: after a
+server restart it resets to `running: false`, while already-fetched news and coverage remain in
+SQLite. Any `steam_news` run left in `running` by a previous process is marked failed on startup.
+The UI polls every ~600 ms, updates the progress bar / ETA, and silently refreshes the current
+list page whenever `done` advances.
+
 ### Steam imports are per account
 
 Each Steam import either selects an existing account or supplies a raw ID (which creates the
@@ -119,7 +236,8 @@ both → `400 invalid`.
 ### GET /api/games
 
 `sort` accepts: `added_desc` (default), `added_asc`, `updated_desc`, `title`, `review_desc`,
-`rating_desc`, `priority`, `price_desc`, `playtime_desc`. `per_page` is clamped to 1..200.
+`rating_desc`, `priority`, `price_desc`, `playtime_desc`. `per_page` is clamped to 1..200 and
+`page` is clamped to the last page after the count query.
 The response is a page object: `{ items, total, page, per_page, total_pages }`.
 
 `account_id` restricts the list to games associated with that account (its wishlist **and** its

@@ -21,8 +21,9 @@ trade-offs in `docs/design.md`, working agreements in this file.
 ## 1. What this project is
 
 `acgn-tools` is a self-hosted collection manager for **ACGN** (anime / comic / game / novel).
-Current scope is **games**: import a Steam wishlist into a local SQLite library and manage
-personal state (status, rating, progress, playtime, notes, favorite).
+Current scope is **games**: import a Steam wishlist into a local SQLite library, manage
+personal state (status, rating, progress, playtime, notes, favorite), and read announcements
+from the games you own.
 
 Planned next: Bangumi integration (bidirectional progress sync), Xiaoheihe (小黑盒), and a
 Tauri desktop client. Backend and frontend are split on purpose so that both the Rust crates

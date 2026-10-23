@@ -9,6 +9,7 @@ description = "Steam 数据源适配：愿望单抓取、商店详情补全、�
 acgn-core.workspace = true
 chrono.workspace = true
 futures.workspace = true
+quick-xml.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

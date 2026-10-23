@@ -12,6 +12,7 @@ const meta = useMetaStore();
 const navItems = [
   { to: "/", icon: "◎", label: "看板", name: "dashboard" },
   { to: "/library", icon: "▤", label: "游戏库", name: "library" },
+  { to: "/news", icon: "📰", label: "游戏新闻", name: "news" },
   { to: "/import", icon: "⇩", label: "导入与同步", name: "import" },
   { to: "/settings", icon: "⚙", label: "设置", name: "settings" },
 ];

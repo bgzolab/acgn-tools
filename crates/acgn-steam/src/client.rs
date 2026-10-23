@@ -104,10 +104,12 @@ fn fallback_candidates<V>(
         .collect()
 }
 
-/// 上游状态码 → 领域错误：5xx 是上游故障（502 upstream），
+/// 上游状态码 → 领域错误：429 是结构化限流（RateLimited），5xx 是上游故障（502 upstream），
 /// 其余非成功状态按来源拒绝（422）处理——别把 Steam 宕机误导成「隐私设置问题」。
-fn http_error_for(endpoint: &str, status: reqwest::StatusCode) -> Error {
-    if status.is_server_error() {
+pub(crate) fn http_error_for(endpoint: &str, status: reqwest::StatusCode) -> Error {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        Error::rate_limited(format!("{endpoint} 返回 HTTP {status}"))
+    } else if status.is_server_error() {
         Error::upstream(format!("{endpoint} 返回 HTTP {status}"))
     } else {
         Error::rejected(format!("{endpoint} 返回 HTTP {status}"))
@@ -231,7 +233,7 @@ impl SteamClient {
     /// 代理 / VPN 切换或连接池里的旧 keep-alive 会让单次请求报 `error sending request`，
     /// 重试一次通常即可恢复；超时不重试（等两遍只会更久）。HTTP 4xx/5xx 不在这里处理，
     /// 由调用方按语义分类（限流 / 隐私 / 下架）。
-    async fn get(&self, url: &str, accept: &str) -> Result<reqwest::Response> {
+    pub(crate) async fn get(&self, url: &str, accept: &str) -> Result<reqwest::Response> {
         let mut attempts = 0u32;
         loop {
             attempts += 1;
@@ -444,7 +446,7 @@ impl SteamClient {
             ));
         }
         if status.as_u16() == 429 {
-            return Err(Error::rejected(
+            return Err(Error::rate_limited(
                 "GetOwnedGames 触发限流（HTTP 429），请稍后再同步库存",
             ));
         }
@@ -512,7 +514,7 @@ impl SteamClient {
 
         let status = response.status();
         if status.as_u16() == 429 {
-            return Err(Error::rejected(
+            return Err(Error::rate_limited(
                 "GetPlayerAchievements 触发限流（HTTP 429），请稍后再试",
             ));
         }
@@ -775,7 +777,7 @@ impl SteamClient {
 
         let status = response.status();
         if status.as_u16() == 429 {
-            return Err(Error::rejected(
+            return Err(Error::rate_limited(
                 "appdetails 触发限流（HTTP 429），请稍后再补全",
             ));
         }
@@ -961,7 +963,8 @@ impl SteamClient {
                     Ok(Some(item)) => items.push(item),
                     Ok(None) => warnings.push(format!("{appid}: Steam 未返回详情（可能已下架）")),
                     Err(err) => {
-                        let rejected = matches!(err, Error::SourceRejected(_));
+                        let rejected =
+                            matches!(err, Error::SourceRejected(_)) || err.is_rate_limited();
                         warnings.push(format!("{appid}: {err}"));
                         if rejected {
                             warnings.push(
@@ -1155,5 +1158,9 @@ mod tests {
             http_error_for("X", reqwest::StatusCode::FORBIDDEN),
             Error::SourceRejected(_)
         ));
+        assert!(
+            http_error_for("X", reqwest::StatusCode::TOO_MANY_REQUESTS).is_rate_limited(),
+            "429 必须走结构化的 RateLimited，而不是 SourceRejected"
+        );
     }
 }

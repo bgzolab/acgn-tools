@@ -294,6 +294,53 @@ export interface PublicConfig {
   default_per_page: number;
 }
 
+export interface GameNews {
+  id: number;
+  game_id: number;
+  source: Source;
+  external_id: string;
+  game_title: string;
+  game_title_zh: string | null;
+  game_cover_url: string | null;
+  game_poster_url: string | null;
+  language: string;
+  title: string;
+  /** 纯文本摘要（后端已剥离 HTML） */
+  summary: string | null;
+  url: string;
+  author: string | null;
+  published_at: string;
+  fetched_at: string;
+}
+
+export interface NewsStatus {
+  language: string;
+  owned_games: number;
+  synced_games: number;
+  pending_games: number;
+  failed_games: number;
+  news_items: number;
+  last_synced_at: string | null;
+}
+
+export interface NewsSyncState {
+  running: boolean;
+  total: number;
+  done: number;
+  succeeded: number;
+  failed: number;
+  items_added: number;
+  items_updated: number;
+  items_unchanged: number;
+  current_game: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  elapsed_ms: number;
+  /** 按平均耗时估算的剩余秒数 */
+  eta_seconds: number | null;
+  warnings: string[];
+}
+
 export interface EntryPatch {
   status?: Status;
   favorite?: boolean;
@@ -312,6 +359,12 @@ export interface GameListParams {
   q?: string;
   sort?: string;
   favorite?: boolean;
+  page?: number;
+  per_page?: number;
+}
+
+export interface NewsListParams {
+  game_id?: number;
   page?: number;
   per_page?: number;
 }

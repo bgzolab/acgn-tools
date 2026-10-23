@@ -8,12 +8,14 @@
 //!   library.json       # GetOwnedGames 形态：{ "response": { "game_count": n, "games": [...] } }（可选）
 //!   achievements.json  # { "<appid>": { "achieved": n, "total": m } }（可选）
 //!   appdetails.json    # { "<appid>": { "success": true, "data": { ...appdetails... } } }
+//!   news.json          # { "news": { "<appid>": [ { guid, title, summary, url, author, published_at } ] } }（可选）
 //!   profile.json       # { "steam_id": "...", "country": "cn", "player": { ...GetPlayerSummaries 的 player... } }（可选）
 //! ```
 //!
 //! 也可以直接指向单个 `wishlist.json`（同目录下的其它文件会被自动发现）。
 //! `library.json` 缺失时库存导入会明确报错，而不是静默返回空库存；
 //! `achievements.json` 缺失时成就同步会明确报错，不会假装「所有游戏都没有成就」；
+//! `news.json` 缺失时新闻同步会明确报错，不会假装「所有游戏都没有新闻」；
 //! `profile.json` 缺失时账号仍会创建（只有 ID），只是没有昵称 / 头像。
 //! `country` 表示 `appdetails.json` 是按哪个商店区域生成的：真实模式按账号区域取价，
 //! fixture 只有这一份数据，换区时会按「该区域无售价」处理，避免拿错币种。
@@ -21,7 +23,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use acgn_core::{AccountProfile, AchievementProgress, Error, Result};
+use acgn_core::{AccountProfile, AchievementProgress, Error, NewsEntry, Result};
 
 use crate::appdetails::AppDetailsResponse;
 use crate::library::OwnedGame;
@@ -37,6 +39,11 @@ pub struct FixtureData {
     pub library: Vec<OwnedGame>,
     /// 成就进度（appid → 达成/总数；文件缺失时为空）
     pub achievements: BTreeMap<String, AchievementProgress>,
+    /// 游戏新闻（appid → 条目；文件缺失时为空）
+    pub news: BTreeMap<String, Vec<NewsEntry>>,
+    /// `news.json` 生成时的语言 / 区域（仅用于与运行时配置比对告警）
+    pub news_language: Option<String>,
+    pub news_country: Option<String>,
     pub appdetails: BTreeMap<String, AppDetailsResponse>,
     /// 账号资料（GetPlayerSummaries 的 player 对象；文件缺失时为空）
     pub profile: Option<serde_json::Value>,
@@ -45,6 +52,7 @@ pub struct FixtureData {
     pub wishlist_path: PathBuf,
     pub library_path: Option<PathBuf>,
     pub achievements_path: Option<PathBuf>,
+    pub news_path: Option<PathBuf>,
     pub appdetails_path: Option<PathBuf>,
     pub profile_path: Option<PathBuf>,
 }
@@ -127,6 +135,12 @@ impl FixtureData {
             None => BTreeMap::new(),
         };
 
+        let (news, news_language, news_country) =
+            match paths.news.as_ref().filter(|path| path.exists()) {
+                Some(news_path) => load_news(news_path)?,
+                None => (BTreeMap::new(), None, None),
+            };
+
         let (profile, store_country) = match paths.profile.as_ref().filter(|path| path.exists()) {
             Some(profile_path) => load_profile(profile_path)?,
             None => (None, None),
@@ -137,12 +151,16 @@ impl FixtureData {
             wishlist,
             library,
             achievements,
+            news,
+            news_language,
+            news_country,
             appdetails,
             profile,
             store_country,
             wishlist_path: paths.wishlist,
             library_path: paths.library,
             achievements_path: paths.achievements,
+            news_path: paths.news,
             appdetails_path: paths.appdetails,
             profile_path: paths.profile,
         })
@@ -273,6 +291,46 @@ fn load_achievements(path: &Path) -> Result<BTreeMap<String, AchievementProgress
     })
 }
 
+/// 载入 `news.json`：`{ "news": { "<appid>": [NewsEntry…] } }` 或裸映射。
+/// 顶层 `language` / `country` 是生成时的元信息，用于与运行时配置比对告警。
+type NewsFixture = (
+    BTreeMap<String, Vec<NewsEntry>>,
+    Option<String>,
+    Option<String>,
+);
+
+fn load_news(path: &Path) -> Result<NewsFixture> {
+    let raw = std::fs::read_to_string(path).map_err(Error::storage)?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
+        Error::invalid(format!(
+            "news fixture 不是合法 JSON（{}）: {err}",
+            path.display()
+        ))
+    })?;
+
+    let language = value
+        .get("language")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let country = value
+        .get("country")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let map = value.get("news").cloned().unwrap_or(value);
+    let news = serde_json::from_value(map).map_err(|err| {
+        Error::invalid(format!(
+            "news fixture 结构不对（{}）: {err}",
+            path.display()
+        ))
+    })?;
+    Ok((news, language, country))
+}
+
 /// 载入 `profile.json`：`{ "country": "cn", "player": {...} }`、GetPlayerSummaries 原始响应
 /// 或裸 player 对象。`country` 表示 `appdetails.json` 是按哪个区域抓的。
 fn load_profile(path: &Path) -> Result<(Option<serde_json::Value>, Option<String>)> {
@@ -311,6 +369,7 @@ struct FixturePaths {
     wishlist: PathBuf,
     library: Option<PathBuf>,
     achievements: Option<PathBuf>,
+    news: Option<PathBuf>,
     appdetails: Option<PathBuf>,
     profile: Option<PathBuf>,
 }
@@ -328,6 +387,7 @@ fn resolve_paths(path: &Path) -> Result<FixturePaths> {
             wishlist,
             library: Some(path.join("library.json")),
             achievements: Some(path.join("achievements.json")),
+            news: Some(path.join("news.json")),
             appdetails: Some(path.join("appdetails.json")),
             profile: Some(path.join("profile.json")),
         });
@@ -339,6 +399,7 @@ fn resolve_paths(path: &Path) -> Result<FixturePaths> {
             wishlist: path.to_path_buf(),
             library: Some(parent.join("library.json")),
             achievements: Some(parent.join("achievements.json")),
+            news: Some(parent.join("news.json")),
             appdetails: Some(parent.join("appdetails.json")),
             profile: Some(parent.join("profile.json")),
         });
@@ -381,6 +442,11 @@ mod tests {
             r#"{"1":{"achieved":3,"total":3}}"#,
         )
         .expect("写 achievements fixture");
+        std::fs::write(
+            dir.join("news.json"),
+            r#"{"language":"schinese","country":"cn","news":{"1":[{"guid":"https://example.com/news/1","title":"Patch","summary":"Fixes","url":"https://example.com/news/1","author":"dev","published_at":"2026-10-01T12:00:00Z"}]}}"#,
+        )
+        .expect("写 news fixture");
         std::fs::write(
             dir.join("profile.json"),
             r#"{"steam_id":"76561198000000000","country":"cn","player":{"steamid":"76561198000000000","personaname":"Fixture","avatarfull":"https://avatars.example/f.jpg","loccountrycode":"US"}}"#,
@@ -429,6 +495,18 @@ mod tests {
             "没有记录的 appid 应返回 None"
         );
 
+        let news = fixture.news_for_app("1").expect("新闻 fixture 应被载入");
+        assert_eq!(news.entries.len(), 1);
+        assert_eq!(news.entries[0].title, "Patch");
+        assert_eq!(fixture.news_language.as_deref(), Some("schinese"));
+        assert_eq!(fixture.news_country.as_deref(), Some("cn"));
+        assert_eq!(fixture.news_locale_warnings("english", "us").len(), 2);
+        assert!(fixture.news_locale_warnings("schinese", "cn").is_empty());
+        assert!(
+            fixture.news_for_app("2").unwrap().entries.is_empty(),
+            "没有记录的 appid 应按空 feed 处理"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -455,6 +533,7 @@ mod tests {
             fixture.achievements_path.is_some(),
             "路径仍应指向预期的 achievements.json"
         );
+        assert!(fixture.news_path.is_some(), "路径仍应指向预期的 news.json");
         assert!(
             fixture.profile_path.is_some(),
             "路径仍应指向预期的 profile.json"
@@ -462,6 +541,10 @@ mod tests {
         assert!(
             fixture.account_profile("76561198000000000").is_err(),
             "缺 profile.json 时账号资料应明确报错"
+        );
+        assert!(
+            fixture.news_for_app("1").is_err(),
+            "缺 news.json 时新闻同步应明确报错"
         );
 
         std::fs::remove_dir_all(&dir).ok();

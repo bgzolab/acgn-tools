@@ -17,6 +17,7 @@ pub mod client;
 pub mod config;
 pub mod fixture;
 pub mod library;
+pub mod news;
 pub mod profile;
 pub mod util;
 pub mod wishlist;
@@ -27,6 +28,7 @@ pub use client::{AppDetailsBatch, ImportFetch, SteamClient};
 pub use config::SteamConfig;
 pub use fixture::FixtureData;
 pub use library::{OwnedGame, OwnedGamesPayload};
+pub use news::{NewsFetch, parse_news_feed};
 pub use profile::{parse_player_summaries, parse_profile_xml};
 pub use wishlist::{WishlistItem, WishlistPayload};
 
@@ -84,6 +86,14 @@ pub fn official_wishlist_url(
 /// 商店详情接口（无需 API Key，但有限流）。
 pub fn app_details_url(appid: &str, country: &str, language: &str) -> String {
     format!("{STORE_BASE}/api/appdetails?appids={appid}&cc={country}&l={language}")
+}
+
+/// 游戏公告 RSS（社区站，无需 API Key）。
+///
+/// 每个 appid 一个 feed；`l` 控制请求语言（Steam 的用户公告内容不一定会翻译，
+/// 但请求头 / 站点语言会跟随），`cc` 与商店区域保持一致。
+pub fn news_feed_url(appid: &str, country: &str, language: &str) -> String {
+    format!("{COMMUNITY_BASE}/games/{appid}/rss/?cc={country}&l={language}")
 }
 
 /// 官方库存接口（**必须**带 API Key：匿名调用会被 401 拒绝）。
@@ -197,5 +207,15 @@ mod tests {
         assert!(url.contains("steamid=76561198000000000"), "{url}");
         assert!(url.contains("appid=1245620"), "{url}");
         assert!(url.contains("l=schinese"), "{url}");
+    }
+
+    /// 新闻 RSS：语言与区域都进 query（`l=` 不能写成示例里的 `=schinese` 笔误）。
+    #[test]
+    fn news_feed_url_carries_country_and_language() {
+        let url = news_feed_url("1250650", "hk", "schinese");
+        assert_eq!(
+            url,
+            "https://steamcommunity.com/games/1250650/rss/?cc=hk&l=schinese"
+        );
     }
 }

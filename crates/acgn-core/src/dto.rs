@@ -221,16 +221,89 @@ pub struct GameListQuery {
 
 impl GameListQuery {
     pub fn page(&self) -> i64 {
-        self.page.unwrap_or(1).max(1)
+        self.page.unwrap_or(1).clamp(1, 1_000_000)
     }
 
     pub fn per_page(&self) -> i64 {
         self.per_page.unwrap_or(48).clamp(1, 200)
     }
+}
 
-    pub fn offset(&self) -> i64 {
-        (self.page() - 1) * self.per_page()
+/// 新闻列表查询参数。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NewsListQuery {
+    /// 只看某个条目（详情抽屉 / 单游戏新闻用）
+    pub game_id: Option<i64>,
+    pub page: Option<i64>,
+    pub per_page: Option<i64>,
+}
+
+impl NewsListQuery {
+    pub fn page(&self) -> i64 {
+        self.page.unwrap_or(1).clamp(1, 1_000_000)
     }
+
+    pub fn per_page(&self) -> i64 {
+        self.per_page.unwrap_or(20).clamp(1, 100)
+    }
+}
+
+/// 数据源产出的单条新闻（适配器 → 存储层的唯一契约）。
+///
+/// 与 [`SourceItem`] 一样，新增来源（Bangumi / 小黑盒）只要产出这个结构，
+/// 就能复用新闻入库与展示，不需要在存储层里写来源分支。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewsEntry {
+    /// 来源侧稳定 ID；Steam RSS 用 `<guid>`，缺失时回退到链接。
+    pub guid: String,
+    pub title: String,
+    /// 纯文本摘要（适配器负责剥离 HTML）
+    pub summary: Option<String>,
+    pub url: String,
+    pub author: Option<String>,
+    pub published_at: DateTime<Utc>,
+}
+
+/// 新闻源同步状态（前端用来显示覆盖率与「继续同步」）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NewsStatus {
+    pub language: String,
+    /// 已拥有的 Steam 游戏数（新闻只同步这些）
+    pub owned_games: i64,
+    /// 至少成功同步过一次的游戏数
+    pub synced_games: i64,
+    /// 还从未成功同步过的游戏数（包含失败后重试的）
+    pub pending_games: i64,
+    /// 最近一次同步失败的游戏数（有旧新闻时仍会继续展示）
+    pub failed_games: i64,
+    /// 当前语言下已入库的新闻条数
+    pub news_items: i64,
+    pub last_synced_at: Option<DateTime<Utc>>,
+}
+
+/// 一次新闻同步的实时状态（前台轮询 / 后台任务共用）。
+///
+/// 同步是一次拉取全部已拥有游戏，不再分批；`done / total`、`current_game` 与
+/// `eta_seconds` 用于进度条和「还要多久」。`items_*` 是**本轮**新增 / 更新 / 未变的
+/// 新闻条数，不是累计值。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NewsSyncState {
+    pub running: bool,
+    pub total: i64,
+    pub done: i64,
+    pub succeeded: i64,
+    pub failed: i64,
+    pub items_added: i64,
+    pub items_updated: i64,
+    pub items_unchanged: i64,
+    /// 当前正在抓取的游戏标题（给进度条下方展示）
+    pub current_game: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<DateTime<Utc>>,
+    pub elapsed_ms: i64,
+    /// 按「已完成个数的平均耗时」估算的剩余秒数；还没完成任何一项时为 `None`
+    pub eta_seconds: Option<i64>,
+    pub warnings: Vec<String>,
 }
 
 /// 手工编辑个人状态时的补丁。

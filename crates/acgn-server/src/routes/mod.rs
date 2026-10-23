@@ -9,6 +9,7 @@ pub mod games;
 pub mod health;
 pub mod imports;
 pub mod misc;
+pub mod news;
 pub mod stats;
 
 use axum::Json;
@@ -30,6 +31,11 @@ pub fn api_router(state: AppState) -> Router<AppState> {
         .route("/config", get(misc::config))
         .route("/stats", get(stats::stats))
         .route("/export/json", get(misc::export_json))
+        // 游戏新闻
+        .route("/news", get(news::list_news))
+        .route("/news/status", get(news::news_status))
+        .route("/news/sync", post(news::start_news_sync))
+        .route("/news/sync/status", get(news::news_sync_status))
         // 游戏
         .route("/games", get(games::list_games))
         .route(
@@ -84,6 +90,10 @@ async fn api_index() -> Json<serde_json::Value> {
             { "method": "GET",   "path": "/api/config",                    "desc": "前端配置（状态枚举、数据源模式）" },
             { "method": "GET",   "path": "/api/stats",                     "desc": "看板统计" },
             { "method": "GET",   "path": "/api/accounts",                  "desc": "数据源账号列表（含库存/愿望单条目数）" },
+            { "method": "GET",   "path": "/api/news",                      "desc": "已拥有游戏的新闻（按发布时间倒序；page/per_page/game_id）" },
+            { "method": "GET",   "path": "/api/news/status",               "desc": "新闻源覆盖率（已同步 / 待同步 / 失败）" },
+            { "method": "GET",   "path": "/api/news/sync/status",          "desc": "全量新闻同步进度（done/total、当前游戏、ETA）" },
+            { "method": "POST",  "path": "/api/news/sync",                 "desc": "启动全量新闻同步（后台任务，立即返回进度）" },
             { "method": "POST",  "path": "/api/accounts/resolve",          "desc": "添加账号：解析 steamID / 个性域名并抓取资料（幂等）" },
             { "method": "PATCH", "path": "/api/accounts/{id}",             "desc": "修改账号价格区域（空串 = 跟随 Steam 资料）" },
             { "method": "DELETE","path": "/api/accounts/{id}",             "desc": "删除账号（关联级联删除，游戏条目保留）" },

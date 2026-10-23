@@ -197,7 +197,10 @@ pub async fn enrich(
     }
 
     // 元数据被限流时别再接着打价格接口：一样会被拒绝
-    let rate_limited = matches!(last_error, Some(Error::SourceRejected(_)));
+    let rate_limited = matches!(
+        last_error,
+        Some(Error::SourceRejected(_) | Error::RateLimited(_))
+    );
     let (account_prices, price_pending, price_failed) = if rate_limited {
         warnings.push("已触发 Steam 限流：账号区域价格下次补全时继续".to_string());
         (0, 0, 0)
@@ -307,7 +310,7 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
         {
             Ok(batch) => batch,
             Err(err) => {
-                let rejected = matches!(err, Error::SourceRejected(_));
+                let rejected = matches!(err, Error::SourceRejected(_) | Error::RateLimited(_));
                 warnings.push(format!("账号区域 {country} 的价格抓取失败：{err}"));
                 if rejected {
                     warnings.push("已触发 Steam 限流：剩余国家的价格下次补全时继续".to_string());
@@ -376,7 +379,10 @@ async fn fill_account_prices(state: &AppState, limit: i64) -> ApiResult<PricePas
         for warning in batch_warnings {
             warnings.push(format!("账号区域 {country}：{warning}"));
         }
-        if matches!(last_error, Some(Error::SourceRejected(_))) {
+        if matches!(
+            last_error,
+            Some(Error::SourceRejected(_) | Error::RateLimited(_))
+        ) {
             warnings.push(format!(
                 "账号区域 {country} 的价格触发 Steam 限流，剩余国家/条目下次补全时继续"
             ));
